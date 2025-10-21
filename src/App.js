@@ -307,15 +307,16 @@ const RankTracker = () => {
                         <td className="px-6 py-4">
                           <div className="flex justify-end">
                             <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
-                              disabled={removingId === kw.keyword_id}
-                              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-white ${removingId === kw.keyword_id ? 'bg-slate-400' : 'bg-red-600 hover:bg-red-700'}`}
-                              title="Remove keyword"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                              {removingId === kw.keyword_id ? 'Removing…' : 'Remove'}
-                            </button>
+  type="button"
+  onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
+  disabled={removingId === kw.keyword_id}
+  className={`inline-flex items-center justify-center w-9 h-9 rounded-md text-white
+    ${removingId === kw.keyword_id ? 'bg-slate-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
+  title="Remove keyword"
+  aria-label="Remove keyword"
+>
+  <Trash2 className="w-4 h-4" />
+</button>
                           </div>
                         </td>
                       </tr>
