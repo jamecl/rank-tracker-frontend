@@ -1,5 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+} from 'recharts';
 import { TrendingUp, TrendingDown, Minus, Search, Plus, Trash2 } from 'lucide-react';
 
 // keep this EXACTLY as '/api'
@@ -18,8 +20,17 @@ const RankTracker = () => {
   const [addSuccess, setAddSuccess] = useState('');
   const [removingId, setRemovingId] = useState(null);
 
+  // Toast
+  const [toast, setToast] = useState(null); // { msg, type: 'success'|'error' }
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+
   useEffect(() => { fetchKeywords(); }, []);
-  useEffect(() => { if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id); }, [selectedKeyword]);
+  useEffect(() => {
+    if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id);
+  }, [selectedKeyword]);
 
   const fetchKeywords = async () => {
     try {
@@ -75,25 +86,24 @@ const RankTracker = () => {
     const input = (newKeyword || '').trim();
     if (!input) return;
 
-    setAddError(''); setAddSuccess(''); setAdding(true);
+    setAddError('');
+    setAddSuccess('');
+    setAdding(true);
+
     const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const existing = new Set(keywords.map((k) => norm(k.keyword)));
 
-    // Existing keywords (normalized)
-    const existing = new Set(keywords.map(k => norm(k.keyword)));
-
-    // Accept CRLF/LF, commas, or tabs (spreadsheet paste). Normalize each.
-    const rawItems = input.split(/[\r\n,\t]+/)
-      .map(s => s.replace(/\s+/g, ' ').trim())
+    const rawItems = input
+      .split(/[\r\n,\t]+/)
+      .map((s) => s.replace(/\s+/g, ' ').trim())
       .filter(Boolean);
 
-    // Dedupe while preserving original case, keyed by normalized value
     const firstSeen = new Map(); // norm -> original
     for (const s of rawItems) {
       const key = norm(s);
       if (!firstSeen.has(key)) firstSeen.set(key, s);
     }
 
-    // Only add items not already present (normalized compare)
     const toAdd = Array.from(firstSeen.entries())
       .filter(([key]) => !existing.has(key))
       .map(([, original]) => original);
@@ -106,24 +116,28 @@ const RankTracker = () => {
         const res = await fetch(`${API_URL}/keywords`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keyword: kw })
+          body: JSON.stringify({ keyword: kw }),
         });
-        if (!res.ok) { fail++; continue; }
+        if (!res.ok) {
+          fail++;
+          continue;
+        }
         ok++;
       } catch {
         fail++;
       }
     }
 
-    await fetchKeywords();     // refresh UI
+    await fetchKeywords();
     setNewKeyword('');
     setShowAddForm(false);
     setAdding(false);
 
-    alert(
+    showToast(
       `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
-      + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
-      + (fail ? ` • ${fail} failed` : '')
+        + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
+        + (fail ? ` • ${fail} failed` : ''),
+      fail ? 'error' : 'success'
     );
   };
 
@@ -134,10 +148,11 @@ const RankTracker = () => {
       const res = await fetch(`${API_URL}/keywords/${kw.keyword_id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setKeywords((prev) => prev.filter((k) => k.keyword_id !== kw.keyword_id));
+      showToast(`Removed "${kw.keyword}"`);
       if (selectedKeyword?.keyword_id === kw.keyword_id) setSelectedKeyword(null);
     } catch (e) {
       console.error(e);
-      alert(`Failed to remove keyword: ${e.message}`);
+      showToast(`Failed to remove keyword: ${e.message}`, 'error');
     } finally {
       setRemovingId(null);
     }
@@ -166,7 +181,8 @@ const RankTracker = () => {
 
   const sortedKeywords = useMemo(() => {
     return [...keywords].sort((a, b) => {
-      const ap = a.position || 9999, bp = b.position || 9999;
+      const ap = a.position || 9999;
+      const bp = b.position || 9999;
       if (ap !== bp) return ap - bp;
       return a.keyword.localeCompare(b.keyword);
     });
@@ -176,7 +192,7 @@ const RankTracker = () => {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
         <div className="text-center">
-          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p className="text-slate-600">Loading rankings...</p>
         </div>
       </div>
@@ -225,7 +241,6 @@ const RankTracker = () => {
                 value={newKeyword}
                 onChange={(e) => setNewKeyword(e.target.value)}
                 onKeyDown={(e) => {
-                  // keep Enter for newlines; submit with Ctrl/Cmd + Enter
                   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                     e.preventDefault();
                     handleAddKeyword();
@@ -254,6 +269,7 @@ const RankTracker = () => {
             <div className="p-6 border-b border-slate-200">
               <h2 className="text-xl font-semibold text-slate-900">Keyword Rankings</h2>
             </div>
+
             {keywords.length === 0 ? (
               <div className="p-12 text-center text-slate-400">
                 <Search className="w-16 h-16 mx-auto mb-4 opacity-50" />
@@ -307,16 +323,15 @@ const RankTracker = () => {
                         <td className="px-6 py-4">
                           <div className="flex justify-end">
                             <button
-  type="button"
-  onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
-  disabled={removingId === kw.keyword_id}
-  className={`inline-flex items-center justify-center w-9 h-9 rounded-md text-white
-    ${removingId === kw.keyword_id ? 'bg-slate-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
-  title="Remove keyword"
-  aria-label="Remove keyword"
->
-  <Trash2 className="w-4 h-4" />
-</button>
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
+                              disabled={removingId === kw.keyword_id}
+                              className={`inline-flex items-center justify-center w-9 h-9 rounded-md text-white ${removingId === kw.keyword_id ? 'bg-slate-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
+                              title="Remove keyword"
+                              aria-label="Remove keyword"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -351,11 +366,19 @@ const RankTracker = () => {
                         dataKey="date"
                         stroke="#64748b"
                         tick={{ fontSize: 12 }}
-                        tickFormatter={(d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        tickFormatter={(d) =>
+                          new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                        }
                       />
                       <YAxis reversed stroke="#64748b" tick={{ fontSize: 12 }} domain={[1, 'dataMax + 5']} />
                       <Tooltip />
-                      <Line type="monotone" dataKey="position" stroke="#2563eb" strokeWidth={2} dot={{ fill: '#2563eb', r: 3 }} />
+                      <Line
+                        type="monotone"
+                        dataKey="position"
+                        stroke="#2563eb"
+                        strokeWidth={2}
+                        dot={{ fill: '#2563eb', r: 3 }}
+                      />
                     </LineChart>
                   </ResponsiveContainer>
                 ) : (
@@ -378,6 +401,17 @@ const RankTracker = () => {
           </div>
         </div>
       </div>
+
+      {/* Toast */}
+      {toast && (
+        <div
+          className={`fixed bottom-4 right-4 px-4 py-3 rounded-lg shadow-lg text-white ${
+            toast.type === 'error' ? 'bg-red-600' : 'bg-slate-900'
+          }`}
+        >
+          {toast.msg}
+        </div>
+      )}
     </div>
   );
 };
