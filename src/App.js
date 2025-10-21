@@ -70,37 +70,61 @@ const RankTracker = () => {
     }
   };
 
-  const handleAddKeyword = async () => {
+  cconst handleAddKeyword = async () => {
   const input = (newKeyword || '').trim();
   if (!input) return;
 
-  // Accept comma-separated, newline-separated, or a pasted spreadsheet column
+  // Existing keywords (lowercased) to avoid dup POSTs/409s
+  const existing = new Set(
+    keywords.map(k => (k.keyword || '').toLowerCase().trim())
+  );
+
+  // Accept commas, newlines, Windows CRLF, or pasted spreadsheet columns (tabs)
   const items = input
-    .split(/[\n,]+/)          // split on newline OR comma
-    .map(s => s.trim())
+    .split(/[\r\n,\t]+/)                   // newline, comma, or tab
+    .map(s => s.replace(/\s+/g, ' ').trim()) // collapse spaces
     .filter(Boolean);
 
-  // Optional: dedupe to avoid double posts
-  const keywordsToAdd = Array.from(new Set(items));
+  // Dedupe while preserving original case
+  const firstSeen = new Map();             // lc -> original
+  for (const s of items) {
+    const lc = s.toLowerCase();
+    if (!firstSeen.has(lc)) firstSeen.set(lc, s);
+  }
 
-  let ok = 0, dup = 0, fail = 0;
+  // Only add items not already in the DB list
+  const toAdd = Array.from(firstSeen.values()).filter(
+    s => !existing.has(s.toLowerCase())
+  );
 
-  for (const kw of keywordsToAdd) {
+  const dup = items.length - toAdd.length; // local dup + already-present
+
+  let ok = 0, fail = 0;
+  for (const kw of toAdd) {
     try {
       const res = await fetch(`${API_URL}/keywords`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keyword: kw })
       });
-
-      if (res.status === 409) { dup++; continue; }   // already exists
       if (!res.ok) { fail++; continue; }
-
       ok++;
-    } catch (e) {
+    } catch {
       fail++;
     }
   }
+
+  await fetchKeywords();     // refresh UI
+  setNewKeyword('');
+  setShowAddForm(false);
+
+  alert(
+    `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
+    + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
+    + (fail ? ` • ${fail} failed` : '')
+  );
+};
+
 
   await fetchKeywords();     // refresh the list
   setNewKeyword('');         // clear the box
