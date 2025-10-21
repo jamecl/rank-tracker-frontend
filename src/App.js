@@ -81,15 +81,16 @@ const RankTracker = () => {
     }
   };
 
-  // MULTI-ADD with duplicate precheck (normalizes case/spacing; handles commas/newlines/tabs)
-  const handleAddKeyword = async () => {
-    const input = (newKeyword || '').trim();
-    if (!input) return;
+// MULTI-ADD with duplicate precheck + parallel requests + guaranteed reset
+const handleAddKeyword = async () => {
+  const input = (newKeyword || '').trim();
+  if (!input) return;
 
-    setAddError('');
-    setAddSuccess('');
-    setAdding(true);
+  setAddError('');
+  setAddSuccess('');
+  setAdding(true);
 
+  try {
     const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
     const existing = new Set(keywords.map((k) => norm(k.keyword)));
 
@@ -108,30 +109,35 @@ const RankTracker = () => {
       .filter(([key]) => !existing.has(key))
       .map(([, original]) => original);
 
-    const dup = rawItems.length - toAdd.length; // local dups + already in DB
-    let ok = 0, fail = 0;
+    const dup = rawItems.length - toAdd.length;
 
-    for (const kw of toAdd) {
-      try {
-        const res = await fetch(`${API_URL}/keywords`, {
+    if (toAdd.length === 0) {
+      showToast(
+        `No new keywords to add${dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : ''}`
+      );
+      return;
+    }
+
+    // Fire all POSTs in parallel; don’t block on one slow request
+    const results = await Promise.allSettled(
+      toAdd.map((kw) =>
+        fetch(`${API_URL}/keywords`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ keyword: kw }),
-        });
-        if (!res.ok) {
-          fail++;
-          continue;
-        }
-        ok++;
-      } catch {
-        fail++;
-      }
+        })
+      )
+    );
+
+    let ok = 0, fail = 0;
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value.ok) ok++;
+      else fail++;
     }
 
-    await fetchKeywords();
+    await fetchKeywords(); // refresh UI
     setNewKeyword('');
     setShowAddForm(false);
-    setAdding(false);
 
     showToast(
       `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
@@ -139,7 +145,15 @@ const RankTracker = () => {
         + (fail ? ` • ${fail} failed` : ''),
       fail ? 'error' : 'success'
     );
-  };
+  } catch (e) {
+    console.error(e);
+    showToast(`Failed to add keywords: ${e.message}`, 'error');
+  } finally {
+    // <- this guarantees the button re-enables even if anything above throws
+    setAdding(false);
+  }
+};
+
 
   const handleDeleteKeyword = async (kw) => {
     if (!window.confirm(`Remove "${kw.keyword}" from tracking?`)) return;
