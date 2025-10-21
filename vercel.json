@@ -1,0 +1,6 @@
+cat > vercel.json <<'JSON'
+{
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "https://ranktrakr-production.up.railway.app/api/:path*" }
+  ]
+}
