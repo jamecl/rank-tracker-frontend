@@ -70,98 +70,62 @@ const RankTracker = () => {
     }
   };
 
+  // MULTI-ADD with duplicate precheck (normalizes case/spacing; handles commas/newlines/tabs)
   const handleAddKeyword = async () => {
-  const input = (newKeyword || '').trim();
-  if (!input) return;
+    const input = (newKeyword || '').trim();
+    if (!input) return;
 
-  // Normalize: lower-case, collapse all whitespace runs to single space, trim
-  const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    setAddError(''); setAddSuccess(''); setAdding(true);
+    const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-  // Existing keywords (normalized)
-  const existing = new Set(keywords.map(k => norm(k.keyword)));
+    // Existing keywords (normalized)
+    const existing = new Set(keywords.map(k => norm(k.keyword)));
 
-  // Accept CRLF/LF, commas, or tabs (spreadsheet paste). Normalize each.
-  const rawItems = input.split(/[\r\n,\t]+/).map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+    // Accept CRLF/LF, commas, or tabs (spreadsheet paste). Normalize each.
+    const rawItems = input.split(/[\r\n,\t]+/)
+      .map(s => s.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
 
-  // Dedupe while preserving original case, key by normalized value
-  const firstSeen = new Map(); // norm -> original
-  for (const s of rawItems) {
-    const key = norm(s);
-    if (!firstSeen.has(key)) firstSeen.set(key, s);
-  }
-
-  // Only add items not already present (using normalized compare)
-  const toAdd = Array.from(firstSeen.entries())
-    .filter(([key]) => !existing.has(key))
-    .map(([, original]) => original);
-
-  const dup = rawItems.length - toAdd.length; // local duplicates + already-in-DB
-
-  let ok = 0, fail = 0;
-  for (const kw of toAdd) {
-    try {
-      const res = await fetch(`${API_URL}/keywords`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyword: kw })
-      });
-      if (!res.ok) { fail++; continue; }
-      ok++;
-    } catch {
-      fail++;
+    // Dedupe while preserving original case, keyed by normalized value
+    const firstSeen = new Map(); // norm -> original
+    for (const s of rawItems) {
+      const key = norm(s);
+      if (!firstSeen.has(key)) firstSeen.set(key, s);
     }
-  }
 
-  await fetchKeywords();     // refresh UI
-  setNewKeyword('');
-  setShowAddForm(false);
+    // Only add items not already present (normalized compare)
+    const toAdd = Array.from(firstSeen.entries())
+      .filter(([key]) => !existing.has(key))
+      .map(([, original]) => original);
 
-  alert(
-    `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
-    + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
-    + (fail ? ` • ${fail} failed` : '')
-  );
-};
+    const dup = rawItems.length - toAdd.length; // local dups + already in DB
+    let ok = 0, fail = 0;
 
-
-  const dup = items.length - toAdd.length; // local dup + already-present
-
-  let ok = 0, fail = 0;
-  for (const kw of toAdd) {
-    try {
-      const res = await fetch(`${API_URL}/keywords`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyword: kw })
-      });
-      if (!res.ok) { fail++; continue; }
-      ok++;
-    } catch {
-      fail++;
+    for (const kw of toAdd) {
+      try {
+        const res = await fetch(`${API_URL}/keywords`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyword: kw })
+        });
+        if (!res.ok) { fail++; continue; }
+        ok++;
+      } catch {
+        fail++;
+      }
     }
-  }
 
-  await fetchKeywords();     // refresh UI
-  setNewKeyword('');
-  setShowAddForm(false);
+    await fetchKeywords();     // refresh UI
+    setNewKeyword('');
+    setShowAddForm(false);
+    setAdding(false);
 
-  alert(
-    `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
-    + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
-    + (fail ? ` • ${fail} failed` : '')
-  );
-};
-
-
-  await fetchKeywords();     // refresh the list
-  setNewKeyword('');         // clear the box
-  setShowAddForm(false);     // close the form
-
-  alert(`Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
-    + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
-    + (fail ? ` • ${fail} failed` : ''));
-};
-
+    alert(
+      `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
+      + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
+      + (fail ? ` • ${fail} failed` : '')
+    );
+  };
 
   const handleDeleteKeyword = async (kw) => {
     if (!window.confirm(`Remove "${kw.keyword}" from tracking?`)) return;
@@ -179,11 +143,14 @@ const RankTracker = () => {
     }
   };
 
-  const getDeltaIcon = (d) => d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
-                          d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
-                                  <Minus className="w-4 h-4 text-gray-400" />;
-  const getDeltaColor = (d) => d > 0 ? 'text-green-600 bg-green-50' :
-                          d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-gray-50';
+  const getDeltaIcon = (d) =>
+    d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
+    d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
+            <Minus className="w-4 h-4 text-gray-400" />;
+
+  const getDeltaColor = (d) =>
+    d > 0 ? 'text-green-600 bg-green-50' :
+    d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-gray-50';
 
   const avgPosition = useMemo(() => {
     const withPos = keywords.filter((k) => k.position > 0);
@@ -241,8 +208,11 @@ const RankTracker = () => {
         </div>
 
         <div className="flex gap-3 mb-6">
-          <button type="button" onClick={() => setShowAddForm((v) => !v)}
-                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+          <button
+            type="button"
+            onClick={() => setShowAddForm((v) => !v)}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
             <Plus className="w-4 h-4" /> Add Keyword
           </button>
         </div>
@@ -252,23 +222,25 @@ const RankTracker = () => {
             <h3 className="text-lg font-semibold text-slate-900 mb-4">Add New Keyword</h3>
             <div className="flex gap-3">
               <textarea
-  value={newKeyword}
-  onChange={(e) => setNewKeyword(e.target.value)}
-  onKeyDown={(e) => {
-    // keep Enter for newlines; use Ctrl/Cmd + Enter to submit
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault();
-      handleAddKeyword();
-    }
-  }}
-  placeholder="Enter keywords — one per line or comma-separated"
-  rows={4}
-  className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-/>
-
-              <button type="button" onClick={handleAddKeyword}
-                      disabled={adding || !newKeyword.trim()}
-                      className={`px-6 py-2 rounded-lg text-white ${adding ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                value={newKeyword}
+                onChange={(e) => setNewKeyword(e.target.value)}
+                onKeyDown={(e) => {
+                  // keep Enter for newlines; submit with Ctrl/Cmd + Enter
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddKeyword();
+                  }
+                }}
+                placeholder="Enter keywords — one per line or comma-separated"
+                rows={4}
+                className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                onClick={handleAddKeyword}
+                disabled={adding || !newKeyword.trim()}
+                className={`px-6 py-2 rounded-lg text-white ${adding ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}
+              >
                 {adding ? 'Adding…' : 'Add'}
               </button>
             </div>
@@ -301,17 +273,24 @@ const RankTracker = () => {
                   </thead>
                   <tbody className="divide-y divide-slate-200">
                     {sortedKeywords.map((kw) => (
-                      <tr key={kw.id} onClick={() => setSelectedKeyword(kw)}
-                          className={`cursor-pointer ${selectedKeyword?.id === kw.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+                      <tr
+                        key={kw.id}
+                        onClick={() => setSelectedKeyword(kw)}
+                        className={`cursor-pointer ${selectedKeyword?.id === kw.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                      >
                         <td className="px-6 py-4">
                           <div className="text-sm font-medium text-slate-900">{kw.keyword}</div>
                           <div className="text-xs text-slate-500 mt-1">{kw.url}</div>
                         </td>
                         <td className="px-6 py-4 text-center">
                           {kw.position > 0 ? (
-                            <span className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-900 text-white text-sm font-semibold">{kw.position}</span>
+                            <span className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-900 text-white text-sm font-semibold">
+                              {kw.position}
+                            </span>
                           ) : (
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">Pending</span>
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">
+                              Pending
+                            </span>
                           )}
                         </td>
                         <td className="px-6 py-4">
@@ -320,16 +299,20 @@ const RankTracker = () => {
                               <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium ${getDeltaColor(kw.delta30)}`}>
                                 {getDeltaIcon(kw.delta30)} {Math.abs(kw.delta30)}
                               </span>
-                            ) : <span className="text-slate-400 text-sm">—</span>}
+                            ) : (
+                              <span className="text-slate-400 text-sm">—</span>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex justify-end">
-                            <button type="button"
-                                    onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
-                                    disabled={removingId === kw.keyword_id}
-                                    className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-white ${removingId === kw.keyword_id ? 'bg-slate-400' : 'bg-red-600 hover:bg-red-700'}`}
-                                    title="Remove keyword">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
+                              disabled={removingId === kw.keyword_id}
+                              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-white ${removingId === kw.keyword_id ? 'bg-slate-400' : 'bg-red-600 hover:bg-red-700'}`}
+                              title="Remove keyword"
+                            >
                               <Trash2 className="w-4 h-4" />
                               {removingId === kw.keyword_id ? 'Removing…' : 'Remove'}
                             </button>
@@ -363,8 +346,12 @@ const RankTracker = () => {
                   <ResponsiveContainer width="100%" height={300}>
                     <LineChart data={historicalData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="date" stroke="#64748b" tick={{ fontSize: 12 }}
-                             tickFormatter={(d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} />
+                      <XAxis
+                        dataKey="date"
+                        stroke="#64748b"
+                        tick={{ fontSize: 12 }}
+                        tickFormatter={(d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                      />
                       <YAxis reversed stroke="#64748b" tick={{ fontSize: 12 }} domain={[1, 'dataMax + 5']} />
                       <Tooltip />
                       <Line type="monotone" dataKey="position" stroke="#2563eb" strokeWidth={2} dot={{ fill: '#2563eb', r: 3 }} />
@@ -395,6 +382,3 @@ const RankTracker = () => {
 };
 
 export default RankTracker;
-
-// deploy: 2025-10-21T05:21:40Z
-// touch: test edit
