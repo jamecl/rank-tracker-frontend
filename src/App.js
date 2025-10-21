@@ -71,45 +71,46 @@ const RankTracker = () => {
   };
 
   const handleAddKeyword = async () => {
-    const value = newKeyword.trim();
-    if (!value || adding) return;
+  const input = (newKeyword || '').trim();
+  if (!input) return;
 
-    setAdding(true); setAddError(''); setAddSuccess('');
+  // Accept comma-separated, newline-separated, or a pasted spreadsheet column
+  const items = input
+    .split(/[\n,]+/)          // split on newline OR comma
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  // Optional: dedupe to avoid double posts
+  const keywordsToAdd = Array.from(new Set(items));
+
+  let ok = 0, dup = 0, fail = 0;
+
+  for (const kw of keywordsToAdd) {
     try {
       const res = await fetch(`${API_URL}/keywords`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyword: value }),
+        body: JSON.stringify({ keyword: kw })
       });
-      if (!res.ok) {
-        let detail = '';
-        try { detail = (await res.json())?.error || ''; } catch {}
-        throw new Error(detail || `HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      if (!data?.success) throw new Error(data?.error || 'Unknown error');
 
-      // show immediately as Pending
-      const created = {
-        id: data.data?.keyword_id ?? `temp-${Date.now()}`,
-        keyword_id: data.data?.keyword_id ?? `temp-${Date.now()}`,
-        keyword: value,
-        position: 0, url: '', searchVolume: 0, delta7: 0, delta30: 0,
-      };
-      setKeywords((prev) => [created, ...prev]);
+      if (res.status === 409) { dup++; continue; }   // already exists
+      if (!res.ok) { fail++; continue; }
 
-      setNewKeyword('');
-      setAddSuccess('Keyword added! Rankings will update tonight at 2 AM.');
-      setTimeout(() => setAddSuccess(''), 3000);
-
-      fetchKeywords(); // merge-safe refresh
-    } catch (err) {
-      console.error(err);
-      setAddError(`Failed to add keyword: ${err.message}`);
-    } finally {
-      setAdding(false);
+      ok++;
+    } catch (e) {
+      fail++;
     }
-  };
+  }
+
+  await fetchKeywords();     // refresh the list
+  setNewKeyword('');         // clear the box
+  setShowAddForm(false);     // close the form
+
+  alert(`Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
+    + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
+    + (fail ? ` • ${fail} failed` : ''));
+};
+
 
   const handleDeleteKeyword = async (kw) => {
     if (!window.confirm(`Remove "${kw.keyword}" from tracking?`)) return;
