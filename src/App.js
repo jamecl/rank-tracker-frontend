@@ -200,11 +200,21 @@ const RankTracker = () => {
           <div className="bg-white rounded-lg shadow-sm p-6 border border-slate-200 mb-6">
             <h3 className="text-lg font-semibold text-slate-900 mb-4">Add New Keyword</h3>
             <div className="flex gap-3">
-              <input type="text" value={newKeyword}
-                     onChange={(e) => setNewKeyword(e.target.value)}
-                     onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddKeyword(); } }}
-                     placeholder="Enter keyword phrase..."
-                     className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <textarea
+  value={newKeyword}
+  onChange={(e) => setNewKeyword(e.target.value)}
+  onKeyDown={(e) => {
+    // keep Enter for newlines; use Ctrl/Cmd + Enter to submit
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      handleAddKeyword();
+    }
+  }}
+  placeholder="Enter keywords — one per line or comma-separated"
+  rows={4}
+  className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+/>
+
               <button type="button" onClick={handleAddKeyword}
                       disabled={adding || !newKeyword.trim()}
                       className={`px-6 py-2 rounded-lg text-white ${adding ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}>
