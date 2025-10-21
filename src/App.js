@@ -70,32 +70,59 @@ const RankTracker = () => {
     }
   };
 
-  cconst handleAddKeyword = async () => {
+  const handleAddKeyword = async () => {
   const input = (newKeyword || '').trim();
   if (!input) return;
 
-  // Existing keywords (lowercased) to avoid dup POSTs/409s
-  const existing = new Set(
-    keywords.map(k => (k.keyword || '').toLowerCase().trim())
-  );
+  // Normalize: lower-case, collapse all whitespace runs to single space, trim
+  const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-  // Accept commas, newlines, Windows CRLF, or pasted spreadsheet columns (tabs)
-  const items = input
-    .split(/[\r\n,\t]+/)                   // newline, comma, or tab
-    .map(s => s.replace(/\s+/g, ' ').trim()) // collapse spaces
-    .filter(Boolean);
+  // Existing keywords (normalized)
+  const existing = new Set(keywords.map(k => norm(k.keyword)));
 
-  // Dedupe while preserving original case
-  const firstSeen = new Map();             // lc -> original
-  for (const s of items) {
-    const lc = s.toLowerCase();
-    if (!firstSeen.has(lc)) firstSeen.set(lc, s);
+  // Accept CRLF/LF, commas, or tabs (spreadsheet paste). Normalize each.
+  const rawItems = input.split(/[\r\n,\t]+/).map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+
+  // Dedupe while preserving original case, key by normalized value
+  const firstSeen = new Map(); // norm -> original
+  for (const s of rawItems) {
+    const key = norm(s);
+    if (!firstSeen.has(key)) firstSeen.set(key, s);
   }
 
-  // Only add items not already in the DB list
-  const toAdd = Array.from(firstSeen.values()).filter(
-    s => !existing.has(s.toLowerCase())
+  // Only add items not already present (using normalized compare)
+  const toAdd = Array.from(firstSeen.entries())
+    .filter(([key]) => !existing.has(key))
+    .map(([, original]) => original);
+
+  const dup = rawItems.length - toAdd.length; // local duplicates + already-in-DB
+
+  let ok = 0, fail = 0;
+  for (const kw of toAdd) {
+    try {
+      const res = await fetch(`${API_URL}/keywords`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword: kw })
+      });
+      if (!res.ok) { fail++; continue; }
+      ok++;
+    } catch {
+      fail++;
+    }
+  }
+
+  await fetchKeywords();     // refresh UI
+  setNewKeyword('');
+  setShowAddForm(false);
+
+  alert(
+    `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
+    + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
+    + (fail ? ` • ${fail} failed` : '')
   );
+};
+
 
   const dup = items.length - toAdd.length; // local dup + already-present
 
