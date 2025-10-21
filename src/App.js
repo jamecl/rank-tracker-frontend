@@ -19,6 +19,7 @@ const RankTracker = () => {
   const [addError, setAddError] = useState('');
   const [addSuccess, setAddSuccess] = useState('');
   const [removingId, setRemovingId] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   // Toast
   const [toast, setToast] = useState(null); // { msg, type: 'success'|'error' }
@@ -30,7 +31,17 @@ const RankTracker = () => {
   useEffect(() => { fetchKeywords(); }, []);
   useEffect(() => {
     if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id);
+    setLastUpdated(pickLatest(data.data));
   }, [selectedKeyword]);
+
+  // Pick the most recent non-null timestamp from API rows
+const pickLatest = (rows = []) => {
+  const ts = rows
+    .map(k => (k.timestamp ? Date.parse(k.timestamp) : 0))
+    .filter(n => Number.isFinite(n) && n > 0);
+  return ts.length ? new Date(Math.max(...ts)) : null;
+};
+
 
   const fetchKeywords = async () => {
     try {
@@ -57,6 +68,11 @@ const RankTracker = () => {
           );
           return [...pending, ...fromServer];
         });
+          const maxTs = fromServer
+    .map(k => k.timestamp ? new Date(k.timestamp).getTime() : 0)
+    .reduce((a, b) => Math.max(a, b), 0);
+  setLastUpdated(maxTs ? new Date(maxTs) : new Date());
+}
       }
     } catch (e) {
       console.error(e);
@@ -319,15 +335,29 @@ const handleUpdateNow = async () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
             <div className="p-6 border-b border-slate-200">
-              <h2 className="text-xl font-semibold text-slate-900">Keyword Rankings</h2>
-            </div>
+  <div className="flex items-center justify-between">
+    <h2 className="text-xl font-semibold text-slate-900">Keyword Rankings</h2>
+    {lastUpdated && (
+      <span className="text-sm text-slate-500">
+        Last updated {new Date(lastUpdated).toLocaleString()}
+      </span>
+    )}
+  </div>
+</div>
+
+  {lastUpdated && (
+    <div className="text-xs text-slate-500">
+      Last updated: {lastUpdated.toLocaleString()}
+    </div>
+  )}
+</div>
             <div className="flex gap-3 mb-6">
   <button
     type="button"
     onClick={() => setShowAddForm((v) => !v)}
     className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
   >
-    <Plus className="w-4 h-4" /> Add Keyword
+    <Plus className="w-4 h-4" /> Add Keyword(s)
   </button>
 
   <button
