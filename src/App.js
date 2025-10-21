@@ -1,3 +1,9 @@
+/* full UI with pending + delete (same one I gave before) */
+<<PASTE THE LAST FULL APP.JS I SENT YOU HERE>>
+cat > src/App.js <<'EOF'
+/* full UI with pending + delete (same one I gave before) */
+<<PASTE THE LAST FULL APP.JS I SENT YOU HERE>>
+cat > src/App.js <<'EOF'
 import React, { useState, useMemo, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, Minus, Search, Plus, Trash2 } from 'lucide-react';
@@ -168,7 +174,7 @@ const RankTracker = () => {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-7xl mx-auto p-6">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-slate-900 mb-2">Keyword Rank Tracker — v7 — v4</h1>
+          <h1 className="text-3xl font-bold text-slate-900 mb-2">Keyword Rank Tracker</h1>
           <p className="text-slate-600">Track keyword rankings for blumenshinelawgroup.com</p>
           <p className="text-sm text-slate-500 mt-1">Rankings update automatically daily at 2:00 AM</p>
         </div>
@@ -333,5 +339,3 @@ const RankTracker = () => {
 };
 
 export default RankTracker;
-
-// touch: 2025-10-21T04:10:41Z
