@@ -154,6 +154,44 @@ const handleAddKeyword = async () => {
   }
 };
 
+const [updatingRanks, setUpdatingRanks] = useState(false);
+
+const handleUpdateNow = async () => {
+  setUpdatingRanks(true);
+  try {<div className="flex gap-3 mb-6">
+  <button
+    type="button"
+    onClick={() => setShowAddForm((v) => !v)}
+    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+  >
+    <Plus className="w-4 h-4" /> Add Keyword
+  </button>
+
+  <button
+    type="button"
+    onClick={handleUpdateNow}
+    disabled={updatingRanks}
+    className={`px-4 py-2 rounded-lg text-white ${updatingRanks ? 'bg-slate-400 cursor-not-allowed' : 'bg-slate-700 hover:bg-slate-800'}`}
+  >
+    {updatingRanks ? 'Updating…' : 'Update Now'}
+  </button>
+</div>
+    const res = await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.success !== false) {
+      showToast('Rankings update kicked off. Check back in ~1–2 minutes.');
+      // Optional: quick refresh now so any immediate updates show up
+      await fetchKeywords();
+    } else {
+      showToast(`Update failed: ${data?.error || res.status}`, 'error');
+    }
+  } catch (e) {
+    showToast(`Update failed: ${e.message}`, 'error');
+  } finally {
+    setUpdatingRanks(false);
+  }
+};
+
 
   const handleDeleteKeyword = async (kw) => {
     if (!window.confirm(`Remove "${kw.keyword}" from tracking?`)) return;
@@ -283,6 +321,25 @@ const handleAddKeyword = async () => {
             <div className="p-6 border-b border-slate-200">
               <h2 className="text-xl font-semibold text-slate-900">Keyword Rankings</h2>
             </div>
+            <div className="flex gap-3 mb-6">
+  <button
+    type="button"
+    onClick={() => setShowAddForm((v) => !v)}
+    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+  >
+    <Plus className="w-4 h-4" /> Add Keyword
+  </button>
+
+  <button
+    type="button"
+    onClick={handleUpdateNow}
+    disabled={updatingRanks}
+    className={`px-4 py-2 rounded-lg text-white ${updatingRanks ? 'bg-slate-400 cursor-not-allowed' : 'bg-slate-700 hover:bg-slate-800'}`}
+  >
+    {updatingRanks ? 'Updating…' : 'Update Now'}
+  </button>
+</div>
+
 
             {keywords.length === 0 ? (
               <div className="p-12 text-center text-slate-400">
