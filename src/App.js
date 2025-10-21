@@ -367,7 +367,32 @@ const handleUpdateNow = async () => {
                       >
                         <td className="px-6 py-4">
                           <div className="text-sm font-medium text-slate-900">{kw.keyword}</div>
-                          <div className="text-xs text-slate-500 mt-1">{kw.url}</div>
+                          <div className="text-xs text-slate-500 mt-1">
+  {kw.url ? (
+    <a
+      href={kw.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="underline decoration-slate-300 hover:decoration-slate-500 break-all"
+      title={kw.url}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {(() => {
+        try {
+          const u = new URL(kw.url);
+          // show hostname + path, trimmed for readability
+          const label = `${u.hostname}${u.pathname}`.replace(/\/$/, '');
+          return label.length > 80 ? label.slice(0, 77) + '…' : label;
+        } catch {
+          return kw.url;
+        }
+      })()}
+    </a>
+  ) : (
+    <span className="text-slate-400">No URL yet</span>
+  )}
+</div>
+
                         </td>
                         <td className="px-6 py-4 text-center">
                           {kw.position > 0 ? (
