@@ -238,7 +238,7 @@ const RankTracker = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
-                    {keywords.map((kw) => (
+                    {sortedKeywords.map((kw) => (
                       <tr key={kw.id} onClick={() => setSelectedKeyword(kw)}
                           className={`cursor-pointer ${selectedKeyword?.id === kw.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
                         <td className="px-6 py-4">
