@@ -4,10 +4,10 @@ import {
 } from 'recharts';
 import { TrendingUp, TrendingDown, Minus, Search, Plus, Trash2 } from 'lucide-react';
 
-// keep this EXACTLY as '/api'
+// Keep this EXACTLY as '/api' so Vercel rewrites to the backend
 const API_URL = process.env.REACT_APP_API_URL || '/api';
 
-const RankTracker = () => {
+function RankTracker() {
   const [keywords, setKeywords] = useState([]);
   const [selectedKeyword, setSelectedKeyword] = useState(null);
   const [newKeyword, setNewKeyword] = useState('');
@@ -16,40 +16,28 @@ const RankTracker = () => {
   const [historicalData, setHistoricalData] = useState([]);
 
   const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState('');
-  const [addSuccess, setAddSuccess] = useState('');
   const [removingId, setRemovingId] = useState(null);
-  const [lastUpdated, setLastUpdated] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Toast
   const [toast, setToast] = useState(null); // { msg, type: 'success'|'error' }
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
   };
 
+  // Fetch list on load
   useEffect(() => { fetchKeywords(); }, []);
-  useEffect(() => {
-    if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id);
-    setLastUpdated(pickLatest(data.data));
-  }, [selectedKeyword]);
+  // Fetch chart data when a keyword is selected
+  useEffect(() => { if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id); }, [selectedKeyword]);
 
-  // Pick the most recent non-null timestamp from API rows
-const pickLatest = (rows = []) => {
-  const ts = rows
-    .map(k => (k.timestamp ? Date.parse(k.timestamp) : 0))
-    .filter(n => Number.isFinite(n) && n > 0);
-  return ts.length ? new Date(Math.max(...ts)) : null;
-};
-
-
-  const fetchKeywords = async () => {
+  async function fetchKeywords() {
     try {
       setLoading(true);
       const res = await fetch(`${API_URL}/keywords`);
       const data = await res.json();
-      if (data.success) {
-        const fromServer = data.data.map((k) => ({
+
+      if (data?.success) {
+        const fromServer = (data.data || []).map((k) => ({
           id: k.keyword_id,
           keyword_id: k.keyword_id,
           keyword: k.keyword,
@@ -58,8 +46,10 @@ const pickLatest = (rows = []) => {
           searchVolume: k.search_volume || 0,
           delta7: k.delta_7 || 0,
           delta30: k.delta_30 || 0,
+          timestamp: k.timestamp || null
         }));
-        // keep local "Pending" rows that the server doesn't return yet
+
+        // keep local "Pending" rows the server doesn't yet return
         setKeywords((prev) => {
           const pending = prev.filter(
             (p) =>
@@ -68,51 +58,47 @@ const pickLatest = (rows = []) => {
           );
           return [...pending, ...fromServer];
         });
-          const maxTs = fromServer
-    .map(k => k.timestamp ? new Date(k.timestamp).getTime() : 0)
-    .reduce((a, b) => Math.max(a, b), 0);
-  setLastUpdated(maxTs ? new Date(maxTs) : new Date());
-}
       }
     } catch (e) {
-      console.error(e);
+      console.error('fetchKeywords error:', e);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const fetchHistoricalData = async (keywordId) => {
+  async function fetchHistoricalData(keywordId) {
     try {
       const res = await fetch(`${API_URL}/keywords/${keywordId}?days=30`);
       const data = await res.json();
-      if (data.success && data.data.rankings) {
+      if (data?.success && data.data?.rankings) {
         setHistoricalData(
-          data.data.rankings.map((r) => ({ date: r.timestamp, position: r.ranking_position }))
+          data.data.rankings.map((r) => ({
+            date: r.timestamp,
+            position: r.ranking_position
+          }))
         );
       } else {
         setHistoricalData([]);
       }
-    } catch {
+    } catch (e) {
+      console.error('fetchHistoricalData error:', e);
       setHistoricalData([]);
     }
-  };
+  }
 
-// MULTI-ADD with duplicate precheck + parallel requests + guaranteed reset
-const handleAddKeyword = async () => {
-  const input = (newKeyword || '').trim();
-  if (!input) return;
+  // MULTI-ADD with duplicate precheck (handles lines/commas/tabs; normalizes spacing/case)
+  async function handleAddKeyword() {
+    const input = (newKeyword || '').trim();
+    if (!input) return;
 
-  setAddError('');
-  setAddSuccess('');
-  setAdding(true);
+    setAdding(true);
 
-  try {
     const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-    const existing = new Set(keywords.map((k) => norm(k.keyword)));
+    const existing = new Set(keywords.map(k => norm(k.keyword)));
 
     const rawItems = input
       .split(/[\r\n,\t]+/)
-      .map((s) => s.replace(/\s+/g, ' ').trim())
+      .map(s => s.replace(/\s+/g, ' ').trim())
       .filter(Boolean);
 
     const firstSeen = new Map(); // norm -> original
@@ -126,106 +112,69 @@ const handleAddKeyword = async () => {
       .map(([, original]) => original);
 
     const dup = rawItems.length - toAdd.length;
+    let ok = 0;
+    let fail = 0;
 
-    if (toAdd.length === 0) {
-      showToast(
-        `No new keywords to add${dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : ''}`
-      );
-      return;
-    }
-
-    // Fire all POSTs in parallel; don’t block on one slow request
-    const results = await Promise.allSettled(
-      toAdd.map((kw) =>
-        fetch(`${API_URL}/keywords`, {
+    for (const kw of toAdd) {
+      try {
+        const res = await fetch(`${API_URL}/keywords`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keyword: kw }),
-        })
-      )
-    );
-
-    let ok = 0, fail = 0;
-    for (const r of results) {
-      if (r.status === 'fulfilled' && r.value.ok) ok++;
-      else fail++;
+          body: JSON.stringify({ keyword: kw })
+        });
+        if (!res.ok) { fail++; continue; }
+        ok++;
+      } catch {
+        fail++;
+      }
     }
 
-    await fetchKeywords(); // refresh UI
+    await fetchKeywords();
     setNewKeyword('');
     setShowAddForm(false);
+    setAdding(false);
 
     showToast(
       `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
-        + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
-        + (fail ? ` • ${fail} failed` : ''),
+      + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
+      + (fail ? ` • ${fail} failed` : ''),
       fail ? 'error' : 'success'
     );
-  } catch (e) {
-    console.error(e);
-    showToast(`Failed to add keywords: ${e.message}`, 'error');
-  } finally {
-    // <- this guarantees the button re-enables even if anything above throws
-    setAdding(false);
   }
-};
 
-const [updatingRanks, setUpdatingRanks] = useState(false);
-
-const handleUpdateNow = async () => {
-  setUpdatingRanks(true);
-  try {<div className="flex gap-3 mb-6">
-  <button
-    type="button"
-    onClick={() => setShowAddForm((v) => !v)}
-    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-  >
-    <Plus className="w-4 h-4" /> Add Keyword
-  </button>
-
-  <button
-    type="button"
-    onClick={handleUpdateNow}
-    disabled={updatingRanks}
-    className={`px-4 py-2 rounded-lg text-white ${updatingRanks ? 'bg-slate-400 cursor-not-allowed' : 'bg-slate-700 hover:bg-slate-800'}`}
-  >
-    {updatingRanks ? 'Updating…' : 'Update Now'}
-  </button>
-</div>
-    const res = await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data?.success !== false) {
-      showToast('Rankings update kicked off. Check back in ~1–2 minutes.');
-      // Optional: quick refresh now so any immediate updates show up
-      await fetchKeywords();
-    } else {
-      showToast(`Update failed: ${data?.error || res.status}`, 'error');
-    }
-  } catch (e) {
-    showToast(`Update failed: ${e.message}`, 'error');
-  } finally {
-    setUpdatingRanks(false);
-  }
-};
-
-
-  const handleDeleteKeyword = async (kw) => {
+  async function handleDeleteKeyword(kw) {
     if (!window.confirm(`Remove "${kw.keyword}" from tracking?`)) return;
     setRemovingId(kw.keyword_id);
     try {
       const res = await fetch(`${API_URL}/keywords/${kw.keyword_id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setKeywords((prev) => prev.filter((k) => k.keyword_id !== kw.keyword_id));
-      showToast(`Removed "${kw.keyword}"`);
       if (selectedKeyword?.keyword_id === kw.keyword_id) setSelectedKeyword(null);
+      showToast(`Removed "${kw.keyword}"`);
     } catch (e) {
       console.error(e);
       showToast(`Failed to remove keyword: ${e.message}`, 'error');
     } finally {
       setRemovingId(null);
     }
-  };
+  }
 
+  async function handleUpdateNow() {
+    try {
+      setRefreshing(true);
+      const res = await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showToast('Rankings refreshed');
+      await fetchKeywords();
+    } catch (e) {
+      console.error(e);
+      showToast(`Refresh failed: ${e.message}`, 'error');
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  // Helpers
   const getDeltaIcon = (d) =>
     d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
     d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
@@ -256,6 +205,15 @@ const handleUpdateNow = async () => {
     });
   }, [keywords]);
 
+  const lastUpdated = useMemo(() => {
+    const dts = keywords
+      .map(k => k.timestamp ? new Date(k.timestamp) : null)
+      .filter(Boolean);
+    if (dts.length === 0) return null;
+    const max = new Date(Math.max(...dts.map(d => d.getTime())));
+    return max;
+  }, [keywords]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
@@ -270,12 +228,14 @@ const handleUpdateNow = async () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-7xl mx-auto p-6">
+        {/* Header */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-slate-900 mb-2">Keyword Rank Tracker</h1>
           <p className="text-slate-600">Track keyword rankings for blumenshinelawgroup.com</p>
           <p className="text-sm text-slate-500 mt-1">Rankings update automatically daily at 2:00 AM</p>
         </div>
 
+        {/* Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <div className="bg-white rounded-lg shadow-sm p-6 border border-slate-200">
             <div className="text-sm font-medium text-slate-600 mb-1">Total Keywords</div>
@@ -291,19 +251,41 @@ const handleUpdateNow = async () => {
           </div>
         </div>
 
-        <div className="flex gap-3 mb-6">
+        {/* Actions */}
+        <div className="flex flex-wrap items-center gap-3 mb-6">
           <button
             type="button"
-            onClick={() => setShowAddForm((v) => !v)}
+            onClick={() => setShowAddForm(v => !v)}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
-            <Plus className="w-4 h-4" /> Add Keyword
+            <Plus className="w-4 h-4" /> Add Keyword(s)
           </button>
+
+          <button
+            type="button"
+            onClick={handleUpdateNow}
+            disabled={refreshing}
+            className={`px-4 py-2 rounded-lg text-white ${refreshing ? 'bg-slate-400' : 'bg-slate-800 hover:bg-slate-900'}`}
+            title="Trigger an immediate ranking refresh"
+          >
+            {refreshing ? 'Updating…' : 'Update Now'}
+          </button>
+
+          {lastUpdated && (
+            <span className="ml-auto text-sm text-slate-500">
+              Last updated:{' '}
+              {lastUpdated.toLocaleString(undefined, {
+                month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+              })}
+            </span>
+          )}
         </div>
 
+        {/* Add form */}
         {showAddForm && (
           <div className="bg-white rounded-lg shadow-sm p-6 border border-slate-200 mb-6">
-            <h3 className="text-lg font-semibold text-slate-900 mb-4">Add New Keyword</h3>
+            <h3 className="text-lg font-semibold text-slate-900 mb-4">Add New Keyword(s)</h3>
             <div className="flex gap-3">
               <textarea
                 value={newKeyword}
@@ -327,49 +309,15 @@ const handleUpdateNow = async () => {
                 {adding ? 'Adding…' : 'Add'}
               </button>
             </div>
-            {addError && <p className="mt-2 text-sm text-red-600">{addError}</p>}
-            {addSuccess && <p className="mt-2 text-sm text-green-600">{addSuccess}</p>}
           </div>
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Table */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
             <div className="p-6 border-b border-slate-200">
-  <div className="flex items-center justify-between">
-    <h2 className="text-xl font-semibold text-slate-900">Keyword Rankings</h2>
-    {lastUpdated && (
-      <span className="text-sm text-slate-500">
-        Last updated {new Date(lastUpdated).toLocaleString()}
-      </span>
-    )}
-  </div>
-</div>
-
-  {lastUpdated && (
-    <div className="text-xs text-slate-500">
-      Last updated: {lastUpdated.toLocaleString()}
-    </div>
-  )}
-</div>
-            <div className="flex gap-3 mb-6">
-  <button
-    type="button"
-    onClick={() => setShowAddForm((v) => !v)}
-    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-  >
-    <Plus className="w-4 h-4" /> Add Keyword(s)
-  </button>
-
-  <button
-    type="button"
-    onClick={handleUpdateNow}
-    disabled={updatingRanks}
-    className={`px-4 py-2 rounded-lg text-white ${updatingRanks ? 'bg-slate-400 cursor-not-allowed' : 'bg-slate-700 hover:bg-slate-800'}`}
-  >
-    {updatingRanks ? 'Updating…' : 'Update Now'}
-  </button>
-</div>
-
+              <h2 className="text-xl font-semibold text-slate-900">Keyword Rankings</h2>
+            </div>
 
             {keywords.length === 0 ? (
               <div className="p-12 text-center text-slate-400">
@@ -391,38 +339,13 @@ const handleUpdateNow = async () => {
                   <tbody className="divide-y divide-slate-200">
                     {sortedKeywords.map((kw) => (
                       <tr
-                        key={kw.id}
+                        key={kw.keyword_id || kw.id}
                         onClick={() => setSelectedKeyword(kw)}
-                        className={`cursor-pointer ${selectedKeyword?.id === kw.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                        className={`cursor-pointer ${selectedKeyword?.keyword_id === kw.keyword_id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
                       >
                         <td className="px-6 py-4">
                           <div className="text-sm font-medium text-slate-900">{kw.keyword}</div>
-                          <div className="text-xs text-slate-500 mt-1">
-  {kw.url ? (
-    <a
-      href={kw.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="underline decoration-slate-300 hover:decoration-slate-500 break-all"
-      title={kw.url}
-      onClick={(e) => e.stopPropagation()}
-    >
-      {(() => {
-        try {
-          const u = new URL(kw.url);
-          // show hostname + path, trimmed for readability
-          const label = `${u.hostname}${u.pathname}`.replace(/\/$/, '');
-          return label.length > 80 ? label.slice(0, 77) + '…' : label;
-        } catch {
-          return kw.url;
-        }
-      })()}
-    </a>
-  ) : (
-    <span className="text-slate-400">No URL yet</span>
-  )}
-</div>
-
+                          <div className="text-xs text-slate-500 mt-1">{kw.url}</div>
                         </td>
                         <td className="px-6 py-4 text-center">
                           {kw.position > 0 ? (
@@ -452,7 +375,9 @@ const handleUpdateNow = async () => {
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
                               disabled={removingId === kw.keyword_id}
-                              className={`inline-flex items-center justify-center w-9 h-9 rounded-md text-white ${removingId === kw.keyword_id ? 'bg-slate-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
+                              className={`inline-flex items-center justify-center w-9 h-9 rounded-md text-white ${
+                                removingId === kw.keyword_id ? 'bg-slate-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'
+                              }`}
                               title="Remove keyword"
                               aria-label="Remove keyword"
                             >
@@ -468,6 +393,7 @@ const handleUpdateNow = async () => {
             )}
           </div>
 
+          {/* Chart */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
             <h2 className="text-xl font-semibold text-slate-900 mb-6">
               {selectedKeyword ? 'Ranking Trend (30 Days)' : 'Select a keyword to view trends'}
@@ -480,7 +406,7 @@ const handleUpdateNow = async () => {
                   <div className="text-lg font-semibold text-slate-900 mb-1">{selectedKeyword.keyword}</div>
                   <div className="flex items-center gap-4 text-sm text-slate-600">
                     <span>Current: #{selectedKeyword.position}</span>
-                    <span>Volume: {selectedKeyword.searchVolume.toLocaleString()}/mo</span>
+                    <span>Volume: {Number(selectedKeyword.searchVolume || 0).toLocaleString()}/mo</span>
                   </div>
                 </div>
 
@@ -492,19 +418,11 @@ const handleUpdateNow = async () => {
                         dataKey="date"
                         stroke="#64748b"
                         tick={{ fontSize: 12 }}
-                        tickFormatter={(d) =>
-                          new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                        }
+                        tickFormatter={(d) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                       />
                       <YAxis reversed stroke="#64748b" tick={{ fontSize: 12 }} domain={[1, 'dataMax + 5']} />
                       <Tooltip />
-                      <Line
-                        type="monotone"
-                        dataKey="position"
-                        stroke="#2563eb"
-                        strokeWidth={2}
-                        dot={{ fill: '#2563eb', r: 3 }}
-                      />
+                      <Line type="monotone" dataKey="position" stroke="#2563eb" strokeWidth={2} dot={{ fill: '#2563eb', r: 3 }} />
                     </LineChart>
                   </ResponsiveContainer>
                 ) : (
@@ -540,6 +458,6 @@ const handleUpdateNow = async () => {
       )}
     </div>
   );
-};
+}
 
 export default RankTracker;
