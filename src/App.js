@@ -260,17 +260,7 @@ const RankTracker = () => {
           </div>
         </div>
 
-        {/* Actions */}
-        <div className="flex gap-3 mb-4">
-          <button
-            type="button"
-            onClick={() => setShowAddForm(v => !v)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            <Plus className="w-4 h-4" /> Add Keyword(s)
-          </button>
-        </div>
-
+      
         {/* Add form */}
         {showAddForm && (
           <div className="bg-white rounded-lg shadow-sm p-4 border border-slate-200 mb-4">
