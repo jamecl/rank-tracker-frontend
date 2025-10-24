@@ -1,10 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
 import { TrendingUp, TrendingDown, Minus, Search, Plus, Trash2 } from 'lucide-react';
 
-// Keep this EXACTLY as '/api' for Vercel proxying
+// keep this EXACTLY as '/api'
 const API_URL = process.env.REACT_APP_API_URL || '/api';
 
 const RankTracker = () => {
@@ -19,28 +19,29 @@ const RankTracker = () => {
   const [addError, setAddError] = useState('');
   const [addSuccess, setAddSuccess] = useState('');
   const [removingId, setRemovingId] = useState(null);
-  const [updating, setUpdating] = useState(false);
 
   const [toast, setToast] = useState(null); // { msg, type: 'success'|'error' }
+  const [lastUpdated, setLastUpdated] = useState(null);
+
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
-    window.clearTimeout(showToast._t);
-    showToast._t = window.setTimeout(() => setToast(null), 3500);
+    // auto-hide after 3.5s
+    setTimeout(() => setToast(null), 3500);
   };
 
-  // ---------- data fetchers ----------
   useEffect(() => { fetchKeywords(); }, []);
   useEffect(() => {
     if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id);
   }, [selectedKeyword]);
 
+  // ---------- API ----------
   const fetchKeywords = async () => {
     try {
       setLoading(true);
       const res = await fetch(`${API_URL}/keywords`);
       const data = await res.json();
       if (data.success) {
-        const fromServer = (data.data || []).map(k => ({
+        const fromServer = data.data.map((k) => ({
           id: k.keyword_id,
           keyword_id: k.keyword_id,
           keyword: k.keyword,
@@ -49,17 +50,24 @@ const RankTracker = () => {
           searchVolume: k.search_volume || 0,
           delta7: k.delta_7 || 0,
           delta30: k.delta_30 || 0,
-          ts: k.timestamp ? new Date(k.timestamp) : null,
+          timestamp: k.timestamp || null,
         }));
 
-        // keep local "Pending" rows added before the server returns them
-        setKeywords(prev => {
+        // preserve any local “Pending” rows the server hasn’t returned yet
+        setKeywords((prev) => {
           const pending = prev.filter(
-            p => p.position === 0 &&
-              !fromServer.some(s => s.keyword_id === p.keyword_id || s.keyword === p.keyword)
+            (p) =>
+              p.position === 0 &&
+              !fromServer.some((s) => s.keyword_id === p.keyword_id || s.keyword === p.keyword)
           );
           return [...pending, ...fromServer];
         });
+
+        // compute most recent timestamp
+        const newest = fromServer
+          .map(k => k.timestamp ? new Date(k.timestamp).getTime() : 0)
+          .reduce((a, b) => Math.max(a, b), 0);
+        setLastUpdated(newest ? new Date(newest).toISOString() : null);
       }
     } catch (e) {
       console.error(e);
@@ -72,9 +80,9 @@ const RankTracker = () => {
     try {
       const res = await fetch(`${API_URL}/keywords/${keywordId}?days=30`);
       const data = await res.json();
-      if (data.success && data.data && Array.isArray(data.data.rankings)) {
+      if (data.success && data.data?.rankings) {
         setHistoricalData(
-          data.data.rankings.map(r => ({
+          data.data.rankings.map((r) => ({
             date: r.timestamp,
             position: r.ranking_position
           }))
@@ -87,50 +95,18 @@ const RankTracker = () => {
     }
   };
 
-  // ---------- helpers ----------
-  const getDeltaIcon = (d) =>
-    d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
-    d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
-            <Minus className="w-4 h-4 text-gray-400" />;
+  const runUpdateNow = async () => {
+    try {
+      const res = await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showToast('Update started. Refresh in a bit.', 'success');
+    } catch (e) {
+      console.error(e);
+      showToast('Failed to start update.', 'error');
+    }
+  };
 
-  const getDeltaColor = (d) =>
-    d > 0 ? 'text-green-600 bg-green-50' :
-    d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-gray-50';
-
-  const avgPosition = useMemo(() => {
-    const withPos = keywords.filter(k => (k.position || 0) > 0);
-    if (withPos.length === 0) return 0;
-    return (withPos.reduce((s, kw) => s + kw.position, 0) / withPos.length).toFixed(1);
-  }, [keywords]);
-
-  const topRanking = useMemo(() => {
-    const withPos = keywords.filter(k => (k.position || 0) > 0);
-    if (withPos.length === 0) return 0;
-    return withPos.reduce((min, kw) => (kw.position < min ? kw.position : min), 100);
-  }, [keywords]);
-
-  const sortedKeywords = useMemo(() => {
-    return [...keywords].sort((a, b) => {
-      const ap = a.position || 9999, bp = b.position || 9999;
-      if (ap !== bp) return ap - bp;
-      return a.keyword.localeCompare(b.keyword);
-    });
-  }, [keywords]);
-
-  const lastUpdated = useMemo(() => {
-    const times = keywords.map(k => k.ts).filter(Boolean);
-    if (times.length === 0) return null;
-    return new Date(Math.max(...times.map(t => t.getTime())));
-  }, [keywords]);
-
-  const fmtLocalDateTime = (d) =>
-    d ? d.toLocaleString(undefined, {
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: 'numeric', minute: '2-digit'
-    }) : '—';
-
-  // ---------- actions ----------
-  // Multi-add with dedupe & normalization (commas, newlines, tabs)
+  // MULTI-ADD with duplicate precheck (handles commas/newlines/tabs)
   const handleAddKeyword = async () => {
     const input = (newKeyword || '').trim();
     if (!input) return;
@@ -139,26 +115,31 @@ const RankTracker = () => {
     setAddSuccess('');
     setAdding(true);
 
+    // normalize for duplicate checks
     const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+    // existing keywords (normalized)
     const existing = new Set(keywords.map(k => norm(k.keyword)));
 
+    // split on CRLF/LF/commas/tabs
     const rawItems = input
       .split(/[\r\n,\t]+/)
       .map(s => s.replace(/\s+/g, ' ').trim())
       .filter(Boolean);
 
-    // dedupe while preserving first original case
+    // dedupe while preserving original case (keyed by normalized)
     const firstSeen = new Map(); // norm -> original
     for (const s of rawItems) {
       const key = norm(s);
       if (!firstSeen.has(key)) firstSeen.set(key, s);
     }
 
+    // only add items not already present
     const toAdd = Array.from(firstSeen.entries())
       .filter(([key]) => !existing.has(key))
       .map(([, original]) => original);
 
-    const dup = rawItems.length - toAdd.length;
+    const dup = rawItems.length - toAdd.length; // duplicates + already in list
     let ok = 0, fail = 0;
 
     for (const kw of toAdd) {
@@ -175,7 +156,7 @@ const RankTracker = () => {
       }
     }
 
-    await fetchKeywords();
+    await fetchKeywords();     // refresh UI
     setNewKeyword('');
     setShowAddForm(false);
     setAdding(false);
@@ -194,9 +175,9 @@ const RankTracker = () => {
     try {
       const res = await fetch(`${API_URL}/keywords/${kw.keyword_id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setKeywords(prev => prev.filter(k => k.keyword_id !== kw.keyword_id));
+      setKeywords((prev) => prev.filter((k) => k.keyword_id !== kw.keyword_id));
       if (selectedKeyword?.keyword_id === kw.keyword_id) setSelectedKeyword(null);
-      showToast(`Removed "${kw.keyword}"`);
+      showToast(`Removed "${kw.keyword}"`, 'success');
     } catch (e) {
       console.error(e);
       showToast(`Failed to remove keyword: ${e.message}`, 'error');
@@ -205,30 +186,43 @@ const RankTracker = () => {
     }
   };
 
-  const handleUpdateNow = async () => {
-    try {
-      setUpdating(true);
-      const res = await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showToast('Update started. Refreshing shortly…', 'success');
+  // ---------- helpers ----------
+  const getDeltaIcon = (d) =>
+    d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
+    d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
+            <Minus className="w-4 h-4 text-gray-400" />;
 
-      // Refresh list after a short delay
-      setTimeout(fetchKeywords, 2500);
-    } catch (e) {
-      console.error(e);
-      showToast(`Failed to start update: ${e.message}`, 'error');
-    } finally {
-      setUpdating(false);
-    }
-  };
+  const getDeltaColor = (d) =>
+    d > 0 ? 'text-green-600 bg-green-50' :
+    d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-gray-50';
 
-  // ---------- UI ----------
+  const avgPosition = useMemo(() => {
+    const withPos = keywords.filter((k) => k.position > 0);
+    if (withPos.length === 0) return 0;
+    return (withPos.reduce((s, kw) => s + kw.position, 0) / withPos.length).toFixed(1);
+  }, [keywords]);
+
+  const topRanking = useMemo(() => {
+    const withPos = keywords.filter((k) => k.position > 0);
+    if (withPos.length === 0) return 0;
+    return withPos.reduce((min, kw) => (kw.position < min ? kw.position : min), 100);
+  }, [keywords]);
+
+  const sortedKeywords = useMemo(() => {
+    return [...keywords].sort((a, b) => {
+      const ap = a.position || 9999, bp = b.position || 9999;
+      if (ap !== bp) return ap - bp;
+      return a.keyword.localeCompare(b.keyword);
+    });
+  }, [keywords]);
+
+  // ---------- render ----------
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
         <div className="text-center">
-          <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-slate-600 text-sm">Loading rankings…</p>
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-600">Loading rankings...</p>
         </div>
       </div>
     );
@@ -237,167 +231,149 @@ const RankTracker = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-7xl mx-auto p-6">
-        {/* Page header */}
-        <div className="mb-4">
+        {/* Top KPIs */}
+        <div className="mb-6">
           <h1 className="text-2xl font-bold text-slate-900 mb-1">Keyword Rank Tracker</h1>
-          <p className="text-slate-600 text-sm">Track keyword rankings for blumenshinelawgroup.com</p>
-          <p className="text-xs text-slate-500 mt-0.5">Rankings update automatically daily at 2:00 AM</p>
+          <p className="text-slate-600">Track keyword rankings for blumenshinelawgroup.com</p>
+          <p className="text-xs text-slate-500 mt-1">Rankings update automatically daily at 2:00 AM</p>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          <div className="bg-white rounded-lg shadow-sm p-4 border border-slate-200">
-            <div className="text-xs font-medium text-slate-600 mb-0.5">Total Keywords</div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="bg-white rounded-lg shadow-sm p-5 border border-slate-200">
+            <div className="text-xs font-medium text-slate-600 mb-1">Total Keywords</div>
             <div className="text-2xl font-bold text-slate-900">{keywords.length}</div>
           </div>
-          <div className="bg-white rounded-lg shadow-sm p-4 border border-slate-200">
-            <div className="text-xs font-medium text-slate-600 mb-0.5">Average Position</div>
+          <div className="bg-white rounded-lg shadow-sm p-5 border border-slate-200">
+            <div className="text-xs font-medium text-slate-600 mb-1">Average Position</div>
             <div className="text-2xl font-bold text-slate-900">{avgPosition}</div>
           </div>
-          <div className="bg-white rounded-lg shadow-sm p-4 border border-slate-200">
-            <div className="text-xs font-medium text-slate-600 mb-0.5">Best Ranking</div>
+          <div className="bg-white rounded-lg shadow-sm p-5 border border-slate-200">
+            <div className="text-xs font-medium text-slate-600 mb-1">Best Ranking</div>
             <div className="text-2xl font-bold text-slate-900">#{topRanking}</div>
           </div>
         </div>
 
-      
-        {/* Add form */}
-        {showAddForm && (
-          <div className="bg-white rounded-lg shadow-sm p-4 border border-slate-200 mb-4">
-            <h3 className="text-base font-semibold text-slate-900 mb-3">Add New Keyword(s)</h3>
-            <div className="flex gap-3">
-              <textarea
-                value={newKeyword}
-                onChange={(e) => setNewKeyword(e.target.value)}
-                onKeyDown={(e) => {
-                  // Keep Enter for newlines; submit with Ctrl/Cmd + Enter
-                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                    e.preventDefault();
-                    handleAddKeyword();
-                  }
-                }}
-                placeholder="Enter keywords — one per line or comma-separated"
-                rows={4}
-                className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-              />
-              <button
-                type="button"
-                onClick={handleAddKeyword}
-                disabled={adding || !newKeyword.trim()}
-                className={`px-5 py-2 rounded-lg text-white ${adding ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}
-              >
-                {adding ? 'Adding…' : 'Add'}
-              </button>
-            </div>
-            {addError && <p className="mt-2 text-xs text-red-600">{addError}</p>}
-            {addSuccess && <p className="mt-2 text-xs text-green-600">{addSuccess}</p>}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Rankings table */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* LEFT: table */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
-           <div className="p-4 border-b border-slate-200">
-  <div className="flex items-center justify-between gap-3">
-    <div>
-      <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
-      <div className="text-xs text-slate-500 mt-0.5">
-        Last updated: {lastUpdated ? new Date(lastUpdated).toLocaleString() : '—'}
-      </div>
-    </div>
-
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        onClick={runUpdateNow}
-        className="px-3 py-1.5 rounded-md bg-slate-900 text-white hover:bg-slate-800 text-sm"
-      >
-        Update Now
-      </button>
-
-      <button
-        type="button"
-        onClick={() => setShowAddForm(v => !v)}
-        className="px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 text-sm inline-flex items-center gap-1"
-      >
-        <Plus className="w-4 h-4" /> Add Keyword(s)
-      </button>
-    </div>
-  </div>
-</div>
-
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-slate-600">
-                  Last updated: {fmtLocalDateTime(lastUpdated)}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleUpdateNow}
-                  disabled={updating}
-                  className={`px-3 py-1.5 rounded-md text-white ${updating ? 'bg-slate-400' : 'bg-slate-900 hover:bg-slate-800'}`}
-                >
-                  {updating ? 'Updating…' : 'Update Now'}
-                </button>
+            {/* Header with Update + Add */}
+            <div className="p-4 border-b border-slate-200">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    Last updated: {lastUpdated ? new Date(lastUpdated).toLocaleString() : '—'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={runUpdateNow}
+                    className="px-3 py-1.5 rounded-md bg-slate-900 text-white hover:bg-slate-800 text-sm"
+                  >
+                    Update Now
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddForm(v => !v)}
+                    className="px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 text-sm inline-flex items-center gap-1"
+                  >
+                    <Plus className="w-4 h-4" /> Add Keyword(s)
+                  </button>
+                </div>
               </div>
             </div>
 
+            {/* Multi-add form */}
+            {showAddForm && (
+              <div className="px-4 pt-4 border-b border-slate-200">
+                <div className="flex gap-3">
+                  <textarea
+                    value={newKeyword}
+                    onChange={(e) => setNewKeyword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddKeyword();
+                      }
+                    }}
+                    placeholder="Enter keywords — one per line or comma-separated"
+                    rows={4}
+                    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddKeyword}
+                    disabled={adding || !newKeyword.trim()}
+                    className={`px-4 py-2 rounded-lg text-white ${adding ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}
+                  >
+                    {adding ? 'Adding…' : 'Add'}
+                  </button>
+                </div>
+                {addError && <p className="mt-2 text-xs text-red-600">{addError}</p>}
+                {addSuccess && <p className="mt-2 text-xs text-green-600">{addSuccess}</p>}
+                <div className="h-4"></div>
+              </div>
+            )}
+
+            {/* Table */}
             {keywords.length === 0 ? (
-              <div className="p-10 text-center text-slate-400">
-                <Search className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p className="text-base mb-1">No keywords yet</p>
+              <div className="p-12 text-center text-slate-400">
+                <Search className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                <p className="text-lg mb-2">No keywords yet</p>
                 <p className="text-sm">Add your first keyword to start tracking</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead className="bg-slate-50 border-b border-slate-200">
-                    <tr className="text-xs">
-                      <th className="px-3 py-2 text-left font-medium text-slate-600 uppercase tracking-wide">Keyword</th>
-                      <th className="px-3 py-2 text-center font-medium text-slate-600 uppercase tracking-wide">Position</th>
-                      <th className="px-3 py-2 text-center font-medium text-slate-600 uppercase tracking-wide">Δ30d</th>
-                      <th className="px-3 py-2 text-right font-medium text-slate-600 uppercase tracking-wide">Actions</th>
+                    <tr>
+                      <th className="px-5 py-2 text-left text-xs font-medium text-slate-600 uppercase">Keyword</th>
+                      <th className="px-5 py-2 text-center text-xs font-medium text-slate-600 uppercase">Position</th>
+                      <th className="px-5 py-2 text-center text-xs font-medium text-slate-600 uppercase">Δ30d</th>
+                      <th className="px-5 py-2 text-right text-xs font-medium text-slate-600 uppercase">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200 text-[13px]">
-                    {sortedKeywords.map(kw => (
+                  <tbody className="divide-y divide-slate-200">
+                    {sortedKeywords.map((kw) => (
                       <tr
                         key={kw.id}
                         onClick={() => setSelectedKeyword(kw)}
                         className={`cursor-pointer ${selectedKeyword?.id === kw.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
                       >
-                        <td className="px-3 py-2 leading-tight">
-                          <div className="font-medium text-slate-900">{kw.keyword}</div>
-                          <div className="text-[11px] text-slate-500 mt-0.5 truncate max-w-[420px]">{kw.url}</div>
+                        <td className="px-5 py-2">
+                          <div className="text-sm font-medium text-slate-900">{kw.keyword}</div>
+                          <div className="text-xs text-slate-500 mt-0.5">{kw.url}</div>
                         </td>
-                        <td className="px-3 py-2 text-center">
+                        <td className="px-5 py-2 text-center">
                           {kw.position > 0 ? (
-                            <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-slate-900 text-white text-xs font-semibold">
+                            <span className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-slate-900 text-white text-sm font-semibold">
                               {kw.position}
                             </span>
                           ) : (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600">
+                            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">
                               Pending
                             </span>
                           )}
                         </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center justify-center gap-1.5">
+                        <td className="px-5 py-2">
+                          <div className="flex items-center justify-center gap-2">
                             {kw.position > 0 ? (
-                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${getDeltaColor(kw.delta30)}`}>
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${getDeltaColor(kw.delta30)}`}>
                                 {getDeltaIcon(kw.delta30)} {Math.abs(kw.delta30)}
                               </span>
                             ) : (
-                              <span className="text-slate-400 text-xs">—</span>
+                              <span className="text-slate-400 text-sm">—</span>
                             )}
                           </div>
                         </td>
-                        <td className="px-3 py-2">
+                        <td className="px-5 py-2">
                           <div className="flex justify-end">
                             <button
                               type="button"
                               onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
                               disabled={removingId === kw.keyword_id}
-                              className={`inline-flex items-center justify-center w-8 h-8 rounded-md text-white ${removingId === kw.keyword_id ? 'bg-slate-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
+                              className={`inline-flex items-center justify-center w-9 h-9 rounded-md text-white ${removingId === kw.keyword_id ? 'bg-slate-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
                               title="Remove keyword"
                               aria-label="Remove keyword"
                             >
@@ -413,8 +389,8 @@ const RankTracker = () => {
             )}
           </div>
 
-          {/* Trend panel */}
-          <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-4">
+          {/* RIGHT: chart */}
+          <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
             <h2 className="text-lg font-semibold text-slate-900 mb-4">
               {selectedKeyword ? 'Ranking Trend (30 Days)' : 'Select a keyword to view trends'}
             </h2>
@@ -423,15 +399,15 @@ const RankTracker = () => {
               <>
                 <div className="mb-4 p-3 bg-slate-50 rounded-lg">
                   <div className="text-xs font-medium text-slate-600 mb-1">Selected Keyword</div>
-                  <div className="text-base font-semibold text-slate-900 mb-0.5">{selectedKeyword.keyword}</div>
-                  <div className="flex items-center gap-4 text-xs text-slate-600">
+                  <div className="text-base font-semibold text-slate-900 mb-1">{selectedKeyword.keyword}</div>
+                  <div className="flex items-center gap-4 text-sm text-slate-600">
                     <span>Current: #{selectedKeyword.position || '—'}</span>
                     <span>Volume: {Number(selectedKeyword.searchVolume || 0).toLocaleString()}/mo</span>
                   </div>
                 </div>
 
                 {historicalData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={260}>
+                  <ResponsiveContainer width="100%" height={300}>
                     <LineChart data={historicalData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                       <XAxis
@@ -448,19 +424,19 @@ const RankTracker = () => {
                     </LineChart>
                   </ResponsiveContainer>
                 ) : (
-                  <div className="flex items-center justify-center h-64 text-slate-400">
+                  <div className="flex items-center justify-center h-80 text-slate-400">
                     <div className="text-center">
                       <p>No historical data yet</p>
-                      <p className="text-xs mt-1">Check back after tonight&apos;s update at 2 AM</p>
+                      <p className="text-sm mt-1">Check back after the next update</p>
                     </div>
                   </div>
                 )}
               </>
             ) : (
-              <div className="flex items-center justify-center h-64 text-slate-400">
+              <div className="flex items-center justify-center h-80 text-slate-400">
                 <div className="text-center">
-                  <Search className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p className="text-sm">Click on a keyword to view its ranking history</p>
+                  <Search className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                  <p>Click on a keyword to view its ranking history</p>
                 </div>
               </div>
             )}
