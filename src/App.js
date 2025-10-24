@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
@@ -19,22 +19,18 @@ const RankTracker = () => {
   const [addError, setAddError] = useState('');
   const [addSuccess, setAddSuccess] = useState('');
   const [removingId, setRemovingId] = useState(null);
+  const [updating, setUpdating] = useState(false);
 
+  // Toast
   const [toast, setToast] = useState(null); // { msg, type: 'success'|'error' }
-  const [lastUpdated, setLastUpdated] = useState(null);
-
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
-    // auto-hide after 3.5s
     setTimeout(() => setToast(null), 3500);
   };
 
   useEffect(() => { fetchKeywords(); }, []);
-  useEffect(() => {
-    if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id);
-  }, [selectedKeyword]);
+  useEffect(() => { if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id); }, [selectedKeyword]);
 
-  // ---------- API ----------
   const fetchKeywords = async () => {
     try {
       setLoading(true);
@@ -53,7 +49,7 @@ const RankTracker = () => {
           timestamp: k.timestamp || null,
         }));
 
-        // preserve any local “Pending” rows the server hasn’t returned yet
+        // Keep any local "Pending" rows that server doesn't include yet
         setKeywords((prev) => {
           const pending = prev.filter(
             (p) =>
@@ -62,12 +58,6 @@ const RankTracker = () => {
           );
           return [...pending, ...fromServer];
         });
-
-        // compute most recent timestamp
-        const newest = fromServer
-          .map(k => k.timestamp ? new Date(k.timestamp).getTime() : 0)
-          .reduce((a, b) => Math.max(a, b), 0);
-        setLastUpdated(newest ? new Date(newest).toISOString() : null);
       }
     } catch (e) {
       console.error(e);
@@ -80,11 +70,11 @@ const RankTracker = () => {
     try {
       const res = await fetch(`${API_URL}/keywords/${keywordId}?days=30`);
       const data = await res.json();
-      if (data.success && data.data?.rankings) {
+      if (data.success && data.data.rankings) {
         setHistoricalData(
           data.data.rankings.map((r) => ({
             date: r.timestamp,
-            position: r.ranking_position
+            position: r.ranking_position,
           }))
         );
       } else {
@@ -95,18 +85,46 @@ const RankTracker = () => {
     }
   };
 
-  const runUpdateNow = async () => {
-    try {
-      const res = await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showToast('Update started. Refresh in a bit.', 'success');
-    } catch (e) {
-      console.error(e);
-      showToast('Failed to start update.', 'error');
-    }
-  };
+  // ---------- helpers ----------
+  const getDeltaIcon = (d) =>
+    d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
+    d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
+            <Minus className="w-4 h-4 text-gray-400" />;
 
-  // MULTI-ADD with duplicate precheck (handles commas/newlines/tabs)
+  const getDeltaColor = (d) =>
+    d > 0 ? 'text-green-600 bg-green-50' :
+    d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-gray-50';
+
+  const avgPosition = useMemo(() => {
+    const withPos = keywords.filter((k) => k.position > 0);
+    if (withPos.length === 0) return 0;
+    return (withPos.reduce((s, kw) => s + kw.position, 0) / withPos.length).toFixed(1);
+  }, [keywords]);
+
+  const topRanking = useMemo(() => {
+    const withPos = keywords.filter((k) => k.position > 0);
+    if (withPos.length === 0) return 0;
+    return withPos.reduce((min, kw) => (kw.position < min ? kw.position : min), 100);
+  }, [keywords]);
+
+  const lastUpdated = useMemo(() => {
+    const times = keywords
+      .map(k => k.timestamp ? new Date(k.timestamp).getTime() : null)
+      .filter(Boolean);
+    if (times.length === 0) return null;
+    const maxTs = Math.max(...times);
+    return new Date(maxTs);
+  }, [keywords]);
+
+  const sortedKeywords = useMemo(() => {
+    return [...keywords].sort((a, b) => {
+      const ap = a.position || 9999, bp = b.position || 9999;
+      if (ap !== bp) return ap - bp;
+      return a.keyword.localeCompare(b.keyword);
+    });
+  }, [keywords]);
+
+  // MULTI-ADD with duplicate precheck (normalizes case/spacing; handles commas/newlines/tabs)
   const handleAddKeyword = async () => {
     const input = (newKeyword || '').trim();
     if (!input) return;
@@ -115,31 +133,25 @@ const RankTracker = () => {
     setAddSuccess('');
     setAdding(true);
 
-    // normalize for duplicate checks
     const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-
-    // existing keywords (normalized)
     const existing = new Set(keywords.map(k => norm(k.keyword)));
 
-    // split on CRLF/LF/commas/tabs
     const rawItems = input
       .split(/[\r\n,\t]+/)
       .map(s => s.replace(/\s+/g, ' ').trim())
       .filter(Boolean);
 
-    // dedupe while preserving original case (keyed by normalized)
     const firstSeen = new Map(); // norm -> original
     for (const s of rawItems) {
       const key = norm(s);
       if (!firstSeen.has(key)) firstSeen.set(key, s);
     }
 
-    // only add items not already present
     const toAdd = Array.from(firstSeen.entries())
       .filter(([key]) => !existing.has(key))
       .map(([, original]) => original);
 
-    const dup = rawItems.length - toAdd.length; // duplicates + already in list
+    const dup = rawItems.length - toAdd.length; // local dups + already in DB
     let ok = 0, fail = 0;
 
     for (const kw of toAdd) {
@@ -176,8 +188,8 @@ const RankTracker = () => {
       const res = await fetch(`${API_URL}/keywords/${kw.keyword_id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setKeywords((prev) => prev.filter((k) => k.keyword_id !== kw.keyword_id));
+      showToast(`Removed "${kw.keyword}"`);
       if (selectedKeyword?.keyword_id === kw.keyword_id) setSelectedKeyword(null);
-      showToast(`Removed "${kw.keyword}"`, 'success');
     } catch (e) {
       console.error(e);
       showToast(`Failed to remove keyword: ${e.message}`, 'error');
@@ -186,37 +198,22 @@ const RankTracker = () => {
     }
   };
 
-  // ---------- helpers ----------
-  const getDeltaIcon = (d) =>
-    d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
-    d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
-            <Minus className="w-4 h-4 text-gray-400" />;
+  const handleUpdateNow = async () => {
+    try {
+      setUpdating(true);
+      const res = await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showToast('Update started. This may take a minute.');
+      // quick refresh after a short delay
+      setTimeout(fetchKeywords, 3000);
+    } catch (e) {
+      console.error(e);
+      showToast(`Failed to start update: ${e.message}`, 'error');
+    } finally {
+      setUpdating(false);
+    }
+  };
 
-  const getDeltaColor = (d) =>
-    d > 0 ? 'text-green-600 bg-green-50' :
-    d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-gray-50';
-
-  const avgPosition = useMemo(() => {
-    const withPos = keywords.filter((k) => k.position > 0);
-    if (withPos.length === 0) return 0;
-    return (withPos.reduce((s, kw) => s + kw.position, 0) / withPos.length).toFixed(1);
-  }, [keywords]);
-
-  const topRanking = useMemo(() => {
-    const withPos = keywords.filter((k) => k.position > 0);
-    if (withPos.length === 0) return 0;
-    return withPos.reduce((min, kw) => (kw.position < min ? kw.position : min), 100);
-  }, [keywords]);
-
-  const sortedKeywords = useMemo(() => {
-    return [...keywords].sort((a, b) => {
-      const ap = a.position || 9999, bp = b.position || 9999;
-      if (ap !== bp) return ap - bp;
-      return a.keyword.localeCompare(b.keyword);
-    });
-  }, [keywords]);
-
-  // ---------- render ----------
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
@@ -231,62 +228,64 @@ const RankTracker = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-7xl mx-auto p-6">
-        {/* Top KPIs */}
+        {/* Page header */}
         <div className="mb-6">
-          <h1 className="text-2xl font-bold text-slate-900 mb-1">Keyword Rank Tracker</h1>
+          <h1 className="text-3xl font-bold text-slate-900 mb-2">Keyword Rank Tracker</h1>
           <p className="text-slate-600">Track keyword rankings for blumenshinelawgroup.com</p>
-          <p className="text-xs text-slate-500 mt-1">Rankings update automatically daily at 2:00 AM</p>
+          <p className="text-sm text-slate-500 mt-1">Rankings update automatically daily at 2:00 AM</p>
         </div>
 
+        {/* Stats */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow-sm p-5 border border-slate-200">
-            <div className="text-xs font-medium text-slate-600 mb-1">Total Keywords</div>
-            <div className="text-2xl font-bold text-slate-900">{keywords.length}</div>
+            <div className="text-sm font-medium text-slate-600 mb-1">Total Keywords</div>
+            <div className="text-3xl font-bold text-slate-900">{keywords.length}</div>
           </div>
           <div className="bg-white rounded-lg shadow-sm p-5 border border-slate-200">
-            <div className="text-xs font-medium text-slate-600 mb-1">Average Position</div>
-            <div className="text-2xl font-bold text-slate-900">{avgPosition}</div>
+            <div className="text-sm font-medium text-slate-600 mb-1">Average Position</div>
+            <div className="text-3xl font-bold text-slate-900">{avgPosition}</div>
           </div>
           <div className="bg-white rounded-lg shadow-sm p-5 border border-slate-200">
-            <div className="text-xs font-medium text-slate-600 mb-1">Best Ranking</div>
-            <div className="text-2xl font-bold text-slate-900">#{topRanking}</div>
+            <div className="text-sm font-medium text-slate-600 mb-1">Best Ranking</div>
+            <div className="text-3xl font-bold text-slate-900">#{topRanking}</div>
           </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* LEFT: table */}
+          {/* Table card */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
-            {/* Header with Update + Add */}
-            <div className="p-4 border-b border-slate-200">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
-                  <div className="text-xs text-slate-500 mt-0.5">
-                    Last updated: {lastUpdated ? new Date(lastUpdated).toLocaleString() : '—'}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={runUpdateNow}
-                    className="px-3 py-1.5 rounded-md bg-slate-900 text-white hover:bg-slate-800 text-sm"
-                  >
-                    Update Now
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setShowAddForm(v => !v)}
-                    className="px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 text-sm inline-flex items-center gap-1"
-                  >
-                    <Plus className="w-4 h-4" /> Add Keyword(s)
-                  </button>
-                </div>
+            {/* Header row with last updated + Update Now */}
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-slate-500">
+                  {lastUpdated ? `Last updated: ${lastUpdated.toLocaleString()}` : 'Last updated: —'}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleUpdateNow}
+                  disabled={updating}
+                  className={`px-3 py-1.5 rounded-md text-white ${updating ? 'bg-slate-400' : 'bg-slate-900 hover:bg-slate-800'}`}
+                >
+                  {updating ? 'Updating…' : 'Update Now'}
+                </button>
               </div>
             </div>
 
-            {/* Multi-add form */}
+            {/* Toolbar with Add Keyword(s) */}
+            <div className="px-5 py-3 border-b border-slate-200">
+              <button
+                type="button"
+                onClick={() => setShowAddForm((v) => !v)}
+                className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                <Plus className="w-4 h-4" /> Add Keyword(s)
+              </button>
+            </div>
+
+            {/* Add form */}
             {showAddForm && (
-              <div className="px-4 pt-4 border-b border-slate-200">
+              <div className="px-5 py-4 border-b border-slate-200">
                 <div className="flex gap-3">
                   <textarea
                     value={newKeyword}
@@ -297,7 +296,7 @@ const RankTracker = () => {
                         handleAddKeyword();
                       }
                     }}
-                    placeholder="Enter keywords — one per line or comma-separated"
+                    placeholder="Enter keywords — one per line, comma- or tab-separated"
                     rows={4}
                     className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
@@ -310,9 +309,8 @@ const RankTracker = () => {
                     {adding ? 'Adding…' : 'Add'}
                   </button>
                 </div>
-                {addError && <p className="mt-2 text-xs text-red-600">{addError}</p>}
-                {addSuccess && <p className="mt-2 text-xs text-green-600">{addSuccess}</p>}
-                <div className="h-4"></div>
+                {addError && <p className="mt-2 text-sm text-red-600">{addError}</p>}
+                {addSuccess && <p className="mt-2 text-sm text-green-600">{addSuccess}</p>}
               </div>
             )}
 
@@ -328,10 +326,10 @@ const RankTracker = () => {
                 <table className="w-full">
                   <thead className="bg-slate-50 border-b border-slate-200">
                     <tr>
-                      <th className="px-5 py-2 text-left text-xs font-medium text-slate-600 uppercase">Keyword</th>
-                      <th className="px-5 py-2 text-center text-xs font-medium text-slate-600 uppercase">Position</th>
-                      <th className="px-5 py-2 text-center text-xs font-medium text-slate-600 uppercase">Δ30d</th>
-                      <th className="px-5 py-2 text-right text-xs font-medium text-slate-600 uppercase">Actions</th>
+                      <th className="px-5 py-2.5 text-left text-xs font-medium text-slate-600 uppercase">Keyword</th>
+                      <th className="px-5 py-2.5 text-center text-xs font-medium text-slate-600 uppercase">Position</th>
+                      <th className="px-5 py-2.5 text-center text-xs font-medium text-slate-600 uppercase">Δ30d</th>
+                      <th className="px-5 py-2.5 text-right text-xs font-medium text-slate-600 uppercase">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
@@ -341,13 +339,17 @@ const RankTracker = () => {
                         onClick={() => setSelectedKeyword(kw)}
                         className={`cursor-pointer ${selectedKeyword?.id === kw.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
                       >
-                        <td className="px-5 py-2">
+                        <td className="px-5 py-3">
                           <div className="text-sm font-medium text-slate-900">{kw.keyword}</div>
-                          <div className="text-xs text-slate-500 mt-0.5">{kw.url}</div>
+                          {kw.url && (
+                            <div className="text-xs text-slate-500 mt-0.5 truncate">
+                              {kw.url}
+                            </div>
+                          )}
                         </td>
-                        <td className="px-5 py-2 text-center">
+                        <td className="px-5 py-3 text-center">
                           {kw.position > 0 ? (
-                            <span className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-slate-900 text-white text-sm font-semibold">
+                            <span className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-900 text-white text-sm font-semibold">
                               {kw.position}
                             </span>
                           ) : (
@@ -356,10 +358,10 @@ const RankTracker = () => {
                             </span>
                           )}
                         </td>
-                        <td className="px-5 py-2">
+                        <td className="px-5 py-3">
                           <div className="flex items-center justify-center gap-2">
                             {kw.position > 0 ? (
-                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium ${getDeltaColor(kw.delta30)}`}>
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium ${getDeltaColor(kw.delta30)}`}>
                                 {getDeltaIcon(kw.delta30)} {Math.abs(kw.delta30)}
                               </span>
                             ) : (
@@ -367,7 +369,7 @@ const RankTracker = () => {
                             )}
                           </div>
                         </td>
-                        <td className="px-5 py-2">
+                        <td className="px-5 py-3">
                           <div className="flex justify-end">
                             <button
                               type="button"
@@ -389,20 +391,20 @@ const RankTracker = () => {
             )}
           </div>
 
-          {/* RIGHT: chart */}
+          {/* Right panel: chart */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
-            <h2 className="text-lg font-semibold text-slate-900 mb-4">
+            <h2 className="text-xl font-semibold text-slate-900 mb-4">
               {selectedKeyword ? 'Ranking Trend (30 Days)' : 'Select a keyword to view trends'}
             </h2>
 
             {selectedKeyword ? (
               <>
-                <div className="mb-4 p-3 bg-slate-50 rounded-lg">
-                  <div className="text-xs font-medium text-slate-600 mb-1">Selected Keyword</div>
-                  <div className="text-base font-semibold text-slate-900 mb-1">{selectedKeyword.keyword}</div>
-                  <div className="flex items-center gap-4 text-sm text-slate-600">
+                <div className="mb-4 p-4 bg-slate-50 rounded-lg">
+                  <div className="text-sm font-medium text-slate-600 mb-1">Selected Keyword</div>
+                  <div className="text-lg font-semibold text-slate-900">{selectedKeyword.keyword}</div>
+                  <div className="flex items-center gap-4 text-sm text-slate-600 mt-1">
                     <span>Current: #{selectedKeyword.position || '—'}</span>
-                    <span>Volume: {Number(selectedKeyword.searchVolume || 0).toLocaleString()}/mo</span>
+                    <span>Volume: {selectedKeyword.searchVolume?.toLocaleString?.() || 0}/mo</span>
                   </div>
                 </div>
 
@@ -427,7 +429,7 @@ const RankTracker = () => {
                   <div className="flex items-center justify-center h-80 text-slate-400">
                     <div className="text-center">
                       <p>No historical data yet</p>
-                      <p className="text-sm mt-1">Check back after the next update</p>
+                      <p className="text-sm mt-2">Check back after tonight&apos;s update at 2 AM</p>
                     </div>
                   </div>
                 )}
