@@ -1,3 +1,4 @@
+// src/App.js
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -11,14 +12,15 @@ const RankTracker = () => {
   const [keywords, setKeywords] = useState([]);
   const [selectedKeyword, setSelectedKeyword] = useState(null);
   const [historicalData, setHistoricalData] = useState([]);
-  const [loading, setLoading] = useState(true);
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [newKeyword, setNewKeyword] = useState('');
   const [adding, setAdding] = useState(false);
   const [removingId, setRemovingId] = useState(null);
 
+  const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null); // { msg, type: 'success'|'error' }
+  const [lastUpdated, setLastUpdated] = useState(null);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -26,19 +28,16 @@ const RankTracker = () => {
   };
 
   useEffect(() => { fetchKeywords(); }, []);
-  useEffect(() => {
-    if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id);
-  }, [selectedKeyword]);
+  useEffect(() => { if (selectedKeyword) fetchHistoricalData(selectedKeyword.keyword_id); }, [selectedKeyword]);
 
-  // --------- data loaders ---------
   const fetchKeywords = async () => {
     try {
       setLoading(true);
       const res = await fetch(`${API_URL}/keywords`);
       const json = await res.json();
-      if (!json.success) throw new Error(json.error || 'Failed to load keywords');
+      if (!json.success) throw new Error('Failed to load keywords');
 
-      const fromServer = json.data.map((k) => ({
+      const fromServer = (json.data || []).map((k) => ({
         id: k.keyword_id,
         keyword_id: k.keyword_id,
         keyword: k.keyword,
@@ -47,10 +46,16 @@ const RankTracker = () => {
         searchVolume: k.search_volume || 0,
         delta7: k.delta_7 || 0,
         delta30: k.delta_30 || 0,
-        timestamp: k.timestamp ? new Date(k.timestamp) : null,
+        timestamp: k.timestamp || null,
       }));
 
-      // Keep any local "Pending" rows the server hasn't returned yet
+      // compute "last updated" as max timestamp we got back
+      const ts = fromServer
+        .map((r) => (r.timestamp ? new Date(r.timestamp).getTime() : 0))
+        .reduce((a, b) => Math.max(a, b), 0);
+      setLastUpdated(ts ? new Date(ts) : null);
+
+      // keep local "Pending" rows not yet returned by the server (position === 0)
       setKeywords((prev) => {
         const pending = prev.filter(
           (p) =>
@@ -61,7 +66,7 @@ const RankTracker = () => {
       });
     } catch (e) {
       console.error(e);
-      showToast(`Failed to load keywords: ${e.message}`, 'error');
+      showToast('Failed to load keywords', 'error');
     } finally {
       setLoading(false);
     }
@@ -71,7 +76,7 @@ const RankTracker = () => {
     try {
       const res = await fetch(`${API_URL}/keywords/${keywordId}?days=30`);
       const data = await res.json();
-      if (data.success && data.data.rankings) {
+      if (data.success && data.data && data.data.rankings) {
         setHistoricalData(
           data.data.rankings.map((r) => ({
             date: r.timestamp,
@@ -86,54 +91,80 @@ const RankTracker = () => {
     }
   };
 
-  // --------- actions ---------
+  // Helpers
+  const getDeltaIcon = (d) =>
+    d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
+    d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
+            <Minus className="w-4 h-4 text-gray-400" />;
+
+  const getDeltaColor = (d) =>
+    d > 0 ? 'text-green-600 bg-green-50' :
+    d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-gray-50';
+
+  const avgPosition = useMemo(() => {
+    const withPos = keywords.filter((k) => k.position > 0);
+    if (withPos.length === 0) return 0;
+    return (withPos.reduce((s, kw) => s + kw.position, 0) / withPos.length).toFixed(1);
+  }, [keywords]);
+
+  const topRanking = useMemo(() => {
+    const withPos = keywords.filter((k) => k.position > 0);
+    if (withPos.length === 0) return 0;
+    return withPos.reduce((min, kw) => (kw.position < min ? kw.position : min), 100);
+  }, [keywords]);
+
+  const sortedKeywords = useMemo(() => {
+    return [...keywords].sort((a, b) => {
+      const ap = a.position || 9999, bp = b.position || 9999;
+      if (ap !== bp) return ap - bp;
+      return a.keyword.localeCompare(b.keyword);
+    });
+  }, [keywords]);
+
+  // Actions
   const handleUpdateNow = async () => {
     try {
-      const res = await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      showToast('Update started — refresh in ~1–2 minutes');
-      // Optional light refresh attempt after a short delay
-      setTimeout(fetchKeywords, 5000);
+      showToast('Update started…');
+      await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
+      // We don’t block for the whole job; just refresh list after a short delay
+      setTimeout(fetchKeywords, 1500);
     } catch (e) {
-      console.error(e);
-      showToast(`Failed to start update: ${e.message}`, 'error');
+      showToast('Failed to start update', 'error');
     }
   };
 
-  // Multi-add with duplicate pre-check; supports newlines/commas/tabs; case/space normalized
+  // MULTI-ADD with duplicate precheck (normalizes case/spacing; handles commas/newlines/tabs)
   const handleAddKeyword = async () => {
     const input = (newKeyword || '').trim();
     if (!input) return;
 
     setAdding(true);
 
-    // normalize: lower-case + collapse spaces
     const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
-    // existing keywords (normalized)
+    // Existing keywords (normalized)
     const existing = new Set(keywords.map((k) => norm(k.keyword)));
 
-    // split by CR/LF/commas/tabs; trim each
+    // Accept CRLF/LF, commas, or tabs (spreadsheet paste). Normalize each.
     const rawItems = input
       .split(/[\r\n,\t]+/)
       .map((s) => s.replace(/\s+/g, ' ').trim())
       .filter(Boolean);
 
-    // first-seen map to dedupe locally (preserve original casing)
+    // Dedupe while preserving original case, keyed by normalized value
     const firstSeen = new Map(); // norm -> original
     for (const s of rawItems) {
       const key = norm(s);
       if (!firstSeen.has(key)) firstSeen.set(key, s);
     }
 
-    // only add items not already present
+    // Only add items not already present (normalized compare)
     const toAdd = Array.from(firstSeen.entries())
       .filter(([key]) => !existing.has(key))
       .map(([, original]) => original);
 
-    const dup = rawItems.length - toAdd.length; // duplicates + already present
-    let ok = 0;
-    let fail = 0;
+    const dup = rawItems.length - toAdd.length; // local dups + already in DB
+    let ok = 0, fail = 0;
 
     for (const kw of toAdd) {
       try {
@@ -142,25 +173,27 @@ const RankTracker = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ keyword: kw }),
         });
-        if (!res.ok) {
-          fail++;
-          continue;
-        }
+        if (!res.ok) { fail++; continue; }
         ok++;
+        // Optimistic “Pending” row until server returns real position
+        setKeywords((prev) => [
+          { id: `tmp-${kw}-${Date.now()}`, keyword_id: `tmp-${kw}`, keyword: kw, position: 0, url: '', delta30: 0, searchVolume: 0 },
+          ...prev,
+        ]);
       } catch {
         fail++;
       }
     }
 
-    await fetchKeywords();
+    await fetchKeywords(); // refresh with server truth
     setNewKeyword('');
     setShowAddForm(false);
     setAdding(false);
 
     showToast(
-      `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}${
-        dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : ''
-      }${fail ? ` • ${fail} failed` : ''}`,
+      `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
+        + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
+        + (fail ? ` • ${fail} failed` : ''),
       fail ? 'error' : 'success'
     );
   };
@@ -173,7 +206,7 @@ const RankTracker = () => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setKeywords((prev) => prev.filter((k) => k.keyword_id !== kw.keyword_id));
       if (selectedKeyword?.keyword_id === kw.keyword_id) setSelectedKeyword(null);
-      showToast(`Removed “${kw.keyword}”`);
+      showToast(`Removed "${kw.keyword}"`);
     } catch (e) {
       console.error(e);
       showToast(`Failed to remove keyword: ${e.message}`, 'error');
@@ -182,49 +215,11 @@ const RankTracker = () => {
     }
   };
 
-  // --------- helpers / derived ---------
-  const getDeltaIcon = (d) =>
-    d > 0 ? (
-      <TrendingUp className="w-4 h-4 text-green-600" />
-    ) : d < 0 ? (
-      <TrendingDown className="w-4 h-4 text-red-600" />
-    ) : (
-      <Minus className="w-4 h-4 text-gray-400" />
-    );
-
-  const getDeltaColor = (d) =>
-    d > 0 ? 'text-green-600 bg-green-50' : d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-600 bg-gray-50';
-
-  const avgPosition = useMemo(() => {
-    const withPos = keywords.filter((k) => (k.position ?? 0) > 0);
-    if (withPos.length === 0) return 0;
-    return (withPos.reduce((s, kw) => s + (kw.position || 0), 0) / withPos.length).toFixed(1);
-  }, [keywords]);
-
-  const lastUpdated = useMemo(() => {
-    const ts = keywords
-      .map((k) => (k.timestamp ? new Date(k.timestamp).getTime() : 0))
-      .filter((n) => n > 0);
-    if (ts.length === 0) return null;
-    const max = new Date(Math.max(...ts));
-    return max.toLocaleString();
-  }, [keywords]);
-
-  const sortedKeywords = useMemo(() => {
-    return [...keywords].sort((a, b) => {
-      const ap = a.position || 9999;
-      const bp = b.position || 9999;
-      if (ap !== bp) return ap - bp;
-      return a.keyword.localeCompare(b.keyword);
-    });
-  }, [keywords]);
-
-  // --------- UI ---------
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
         <div className="text-center">
-          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p className="text-slate-600">Loading rankings...</p>
         </div>
       </div>
@@ -235,14 +230,14 @@ const RankTracker = () => {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-7xl mx-auto p-6">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-slate-900 mb-2">Keyword Rank Tracker</h1>
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold text-slate-900 mb-1">Keyword Rank Tracker</h1>
           <p className="text-slate-600">Track keyword rankings for blumenshinelawgroup.com</p>
           <p className="text-sm text-slate-500 mt-1">Rankings update automatically daily at 2:00 AM</p>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+        {/* KPI cards (tighter spacing) */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow-sm p-5 border border-slate-200">
             <div className="text-sm font-medium text-slate-600 mb-1">Total Keywords</div>
             <div className="text-3xl font-bold text-slate-900">{keywords.length}</div>
@@ -251,20 +246,25 @@ const RankTracker = () => {
             <div className="text-sm font-medium text-slate-600 mb-1">Average Position</div>
             <div className="text-3xl font-bold text-slate-900">{avgPosition}</div>
           </div>
+          <div className="bg-white rounded-lg shadow-sm p-5 border border-slate-200">
+            <div className="text-sm font-medium text-slate-600 mb-1">Best Ranking</div>
+            <div className="text-3xl font-bold text-slate-900">#{topRanking}</div>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Table Card */}
+          {/* Left: table */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
-            {/* Card header with controls */}
-            <div className="p-3 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
+
               <div className="flex items-center gap-3">
-                <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
                 {lastUpdated && (
-                  <span className="text-xs text-slate-500">Last updated: {lastUpdated}</span>
+                  <span className="text-xs text-slate-500">
+                    Last updated: {lastUpdated.toLocaleString()}
+                  </span>
                 )}
-              </div>
-              <div className="flex items-center gap-3">
+
                 <button
                   type="button"
                   onClick={() => setShowAddForm((v) => !v)}
@@ -272,52 +272,48 @@ const RankTracker = () => {
                 >
                   <Plus className="w-4 h-4" /> Add Keyword(s)
                 </button>
+
                 <button
                   type="button"
                   onClick={handleUpdateNow}
-                  className="px-3 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800"
+                  className="px-3 py-2 bg-slate-900 text-white rounded-lg hover:bg-black"
                 >
                   Update Now
                 </button>
               </div>
             </div>
 
-            {/* Add form */}
             {showAddForm && (
-              <div className="px-4 py-3 border-b border-slate-200">
+              <div className="px-5 py-4 border-b border-slate-200">
                 <div className="flex gap-3">
                   <textarea
                     value={newKeyword}
                     onChange={(e) => setNewKeyword(e.target.value)}
                     onKeyDown={(e) => {
-                      // keep Enter for newlines; submit with Ctrl/Cmd + Enter
                       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                         e.preventDefault();
                         handleAddKeyword();
                       }
                     }}
                     placeholder="Enter keywords — one per line or comma-separated"
-                    rows={3}
+                    rows={4}
                     className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   <button
                     type="button"
                     onClick={handleAddKeyword}
                     disabled={adding || !newKeyword.trim()}
-                    className={`px-4 py-2 rounded-lg text-white ${
-                      adding ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'
-                    }`}
+                    className={`px-4 py-2 rounded-lg text-white ${adding ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}
                   >
                     {adding ? 'Adding…' : 'Add'}
                   </button>
                 </div>
                 <p className="text-xs text-slate-500 mt-2">
-                  Tip: paste a list from a spreadsheet — newlines, commas, or tabs are all accepted.
+                  Tip: Paste from spreadsheets; commas, tabs, or new lines are all supported. Use ⌘/Ctrl + Enter to submit.
                 </p>
               </div>
             )}
 
-            {/* Table */}
             {keywords.length === 0 ? (
               <div className="p-12 text-center text-slate-400">
                 <Search className="w-16 h-16 mx-auto mb-4 opacity-50" />
@@ -329,18 +325,10 @@ const RankTracker = () => {
                 <table className="w-full">
                   <thead className="bg-slate-50 border-b border-slate-200">
                     <tr>
-                      <th className="px-4 py-2.5 text-left text-xs font-medium text-slate-600 uppercase">
-                        Keyword
-                      </th>
-                      <th className="px-4 py-2.5 text-center text-xs font-medium text-slate-600 uppercase">
-                        Position
-                      </th>
-                      <th className="px-4 py-2.5 text-center text-xs font-medium text-slate-600 uppercase">
-                        Δ30d
-                      </th>
-                      <th className="px-4 py-2.5 text-right text-xs font-medium text-slate-600 uppercase">
-                        Actions
-                      </th>
+                      <th className="px-5 py-3 text-left text-xs font-medium text-slate-600 uppercase">Keyword</th>
+                      <th className="px-5 py-3 text-center text-xs font-medium text-slate-600 uppercase">Position</th>
+                      <th className="px-5 py-3 text-center text-xs font-medium text-slate-600 uppercase">Δ30d</th>
+                      <th className="px-5 py-3 text-right text-xs font-medium text-slate-600 uppercase">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
@@ -348,15 +336,13 @@ const RankTracker = () => {
                       <tr
                         key={kw.id}
                         onClick={() => setSelectedKeyword(kw)}
-                        className={`cursor-pointer ${
-                          selectedKeyword?.id === kw.id ? 'bg-blue-50' : 'hover:bg-slate-50'
-                        }`}
+                        className={`cursor-pointer ${selectedKeyword?.id === kw.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
                       >
-                        <td className="px-4 py-3">
+                        <td className="px-5 py-3">
                           <div className="text-sm font-medium text-slate-900">{kw.keyword}</div>
                           <div className="text-xs text-slate-500 mt-1">{kw.url}</div>
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-5 py-3 text-center">
                           {kw.position > 0 ? (
                             <span className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-900 text-white text-sm font-semibold">
                               {kw.position}
@@ -367,14 +353,10 @@ const RankTracker = () => {
                             </span>
                           )}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-5 py-3">
                           <div className="flex items-center justify-center gap-2">
                             {kw.position > 0 ? (
-                              <span
-                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-sm font-medium ${getDeltaColor(
-                                  kw.delta30
-                                )}`}
-                              >
+                              <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium ${getDeltaColor(kw.delta30)}`}>
                                 {getDeltaIcon(kw.delta30)} {Math.abs(kw.delta30)}
                               </span>
                             ) : (
@@ -382,20 +364,13 @@ const RankTracker = () => {
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-5 py-3">
                           <div className="flex justify-end">
                             <button
                               type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteKeyword(kw);
-                              }}
+                              onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
                               disabled={removingId === kw.keyword_id}
-                              className={`inline-flex items-center justify-center w-9 h-9 rounded-md text-white ${
-                                removingId === kw.keyword_id
-                                  ? 'bg-slate-400 cursor-not-allowed'
-                                  : 'bg-red-600 hover:bg-red-700'
-                              }`}
+                              className={`inline-flex items-center justify-center w-9 h-9 rounded-md text-white ${removingId === kw.keyword_id ? 'bg-slate-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
                               title="Remove keyword"
                               aria-label="Remove keyword"
                             >
@@ -411,9 +386,9 @@ const RankTracker = () => {
             )}
           </div>
 
-          {/* Trend Card */}
+          {/* Right: Trend panel */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
-            <h2 className="text-lg font-semibold text-slate-900 mb-4">
+            <h2 className="text-xl font-semibold text-slate-900 mb-4">
               {selectedKeyword ? 'Ranking Trend (30 Days)' : 'Select a keyword to view trends'}
             </h2>
 
@@ -421,9 +396,7 @@ const RankTracker = () => {
               <>
                 <div className="mb-4 p-4 bg-slate-50 rounded-lg">
                   <div className="text-sm font-medium text-slate-600 mb-1">Selected Keyword</div>
-                  <div className="text-lg font-semibold text-slate-900 mb-1">
-                    {selectedKeyword.keyword}
-                  </div>
+                  <div className="text-lg font-semibold text-slate-900 mb-1">{selectedKeyword.keyword}</div>
                   <div className="flex items-center gap-4 text-sm text-slate-600">
                     <span>Current: #{selectedKeyword.position || '—'}</span>
                     <span>Volume: {selectedKeyword.searchVolume?.toLocaleString?.() || 0}/mo</span>
@@ -444,13 +417,7 @@ const RankTracker = () => {
                       />
                       <YAxis reversed stroke="#64748b" tick={{ fontSize: 12 }} domain={[1, 'dataMax + 5']} />
                       <Tooltip />
-                      <Line
-                        type="monotone"
-                        dataKey="position"
-                        stroke="#2563eb"
-                        strokeWidth={2}
-                        dot={{ fill: '#2563eb', r: 3 }}
-                      />
+                      <Line type="monotone" dataKey="position" stroke="#2563eb" strokeWidth={2} dot={{ fill: '#2563eb', r: 3 }} />
                     </LineChart>
                   </ResponsiveContainer>
                 ) : (
