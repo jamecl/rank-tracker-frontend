@@ -297,8 +297,35 @@ const RankTracker = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Rankings table */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
+           <div className="p-4 border-b border-slate-200">
+  <div className="flex items-center justify-between gap-3">
+    <div>
+      <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
+      <div className="text-xs text-slate-500 mt-0.5">
+        Last updated: {lastUpdated ? new Date(lastUpdated).toLocaleString() : '—'}
+      </div>
+    </div>
+
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={runUpdateNow}
+        className="px-3 py-1.5 rounded-md bg-slate-900 text-white hover:bg-slate-800 text-sm"
+      >
+        Update Now
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setShowAddForm(v => !v)}
+        className="px-3 py-1.5 rounded-md bg-blue-600 text-white hover:bg-blue-700 text-sm inline-flex items-center gap-1"
+      >
+        <Plus className="w-4 h-4" /> Add Keyword(s)
+      </button>
+    </div>
+  </div>
+</div>
+
               <div className="flex items-center gap-3">
                 <span className="text-xs text-slate-600">
                   Last updated: {fmtLocalDateTime(lastUpdated)}
