@@ -49,13 +49,12 @@ const RankTracker = () => {
         timestamp: k.timestamp || null,
       }));
 
-      // compute "last updated" as max timestamp we got back
       const ts = fromServer
         .map((r) => (r.timestamp ? new Date(r.timestamp).getTime() : 0))
         .reduce((a, b) => Math.max(a, b), 0);
       setLastUpdated(ts ? new Date(ts) : null);
 
-      // keep local "Pending" rows not yet returned by the server (position === 0)
+      // keep any local “pending” rows not returned yet
       setKeywords((prev) => {
         const pending = prev.filter(
           (p) =>
@@ -91,7 +90,7 @@ const RankTracker = () => {
     }
   };
 
-  // Helpers
+  // helpers
   const getDeltaIcon = (d) =>
     d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
     d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
@@ -121,19 +120,18 @@ const RankTracker = () => {
     });
   }, [keywords]);
 
-  // Actions
+  // actions
   const handleUpdateNow = async () => {
     try {
       showToast('Update started…');
       await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
-      // We don’t block for the whole job; just refresh list after a short delay
       setTimeout(fetchKeywords, 1500);
-    } catch (e) {
+    } catch {
       showToast('Failed to start update', 'error');
     }
   };
 
-  // MULTI-ADD with duplicate precheck (normalizes case/spacing; handles commas/newlines/tabs)
+  // multi-add
   const handleAddKeyword = async () => {
     const input = (newKeyword || '').trim();
     if (!input) return;
@@ -141,29 +139,24 @@ const RankTracker = () => {
     setAdding(true);
 
     const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-
-    // Existing keywords (normalized)
     const existing = new Set(keywords.map((k) => norm(k.keyword)));
 
-    // Accept CRLF/LF, commas, or tabs (spreadsheet paste). Normalize each.
     const rawItems = input
       .split(/[\r\n,\t]+/)
       .map((s) => s.replace(/\s+/g, ' ').trim())
       .filter(Boolean);
 
-    // Dedupe while preserving original case, keyed by normalized value
-    const firstSeen = new Map(); // norm -> original
+    const firstSeen = new Map();
     for (const s of rawItems) {
       const key = norm(s);
       if (!firstSeen.has(key)) firstSeen.set(key, s);
     }
 
-    // Only add items not already present (normalized compare)
     const toAdd = Array.from(firstSeen.entries())
       .filter(([key]) => !existing.has(key))
       .map(([, original]) => original);
 
-    const dup = rawItems.length - toAdd.length; // local dups + already in DB
+    const dup = rawItems.length - toAdd.length;
     let ok = 0, fail = 0;
 
     for (const kw of toAdd) {
@@ -175,7 +168,6 @@ const RankTracker = () => {
         });
         if (!res.ok) { fail++; continue; }
         ok++;
-        // Optimistic “Pending” row until server returns real position
         setKeywords((prev) => [
           { id: `tmp-${kw}-${Date.now()}`, keyword_id: `tmp-${kw}`, keyword: kw, position: 0, url: '', delta30: 0, searchVolume: 0 },
           ...prev,
@@ -185,7 +177,7 @@ const RankTracker = () => {
       }
     }
 
-    await fetchKeywords(); // refresh with server truth
+    await fetchKeywords();
     setNewKeyword('');
     setShowAddForm(false);
     setAdding(false);
@@ -229,14 +221,14 @@ const RankTracker = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-7xl mx-auto p-6">
-        {/* Header */}
+        {/* Page header */}
         <div className="mb-6">
           <h1 className="text-3xl font-bold text-slate-900 mb-1">Keyword Rank Tracker</h1>
           <p className="text-slate-600">Track keyword rankings for blumenshinelawgroup.com</p>
           <p className="text-sm text-slate-500 mt-1">Rankings update automatically daily at 2:00 AM</p>
         </div>
 
-        {/* KPI cards (tighter spacing) */}
+        {/* KPIs */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow-sm p-5 border border-slate-200">
             <div className="text-sm font-medium text-slate-600 mb-1">Total Keywords</div>
@@ -253,7 +245,7 @@ const RankTracker = () => {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Left: table */}
+          {/* Table card */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
@@ -265,6 +257,7 @@ const RankTracker = () => {
                   </span>
                 )}
 
+                {/* SINGLE Add button lives here */}
                 <button
                   type="button"
                   onClick={() => setShowAddForm((v) => !v)}
@@ -386,7 +379,7 @@ const RankTracker = () => {
             )}
           </div>
 
-          {/* Right: Trend panel */}
+          {/* Trend panel */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 p-6">
             <h2 className="text-xl font-semibold text-slate-900 mb-4">
               {selectedKeyword ? 'Ranking Trend (30 Days)' : 'Select a keyword to view trends'}
