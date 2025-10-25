@@ -1,476 +1,494 @@
-import React, { useEffect, useMemo, useState } from 'react';
+// src/App.js
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-} from 'recharts';
-import { TrendingUp, TrendingDown, Minus, Search, Plus, Trash2 } from 'lucide-react';
+  Plus, Trash2, RefreshCw, Loader2, TrendingUp, TrendingDown, Minus
+} from 'lucide-react';
 
-// keep this EXACTLY as '/api'
-const API_URL = process.env.REACT_APP_API_URL || '/api';
+// If you deploy with CRA on Vercel, set REACT_APP_API_URL. Otherwise, leave empty for same-origin.
+const API_URL = process.env.REACT_APP_API_URL || '';
 
-const RankTracker = () => {
-  const [keywords, setKeywords] = useState([]);
-  const [selectedKeyword, setSelectedKeyword] = useState(null);
-  const [historicalData, setHistoricalData] = useState([]);
-  const [loading, setLoading] = useState(true);
+function formatDate(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts);
+    return d.toLocaleString();
+  } catch {
+    return String(ts);
+  }
+}
 
-  // UI states
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [newKeyword, setNewKeyword] = useState('');
-  const [adding, setAdding] = useState(false);
+function classNames(...xs) {
+  return xs.filter(Boolean).join(' ');
+}
+
+// Ranks: smaller is better (1 is best).
+// A negative delta means improved rank (moved up), positive = declined.
+function DeltaBadge({ delta }) {
+  if (delta === null || delta === undefined) return <span className="text-slate-400">—</span>;
+  const val = Number(delta);
+  if (Number.isNaN(val)) return <span className="text-slate-400">—</span>;
+
+  if (val < 0) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium bg-green-50 text-green-700">
+        <TrendingUp className="w-3.5 h-3.5" />
+        {Math.abs(val)}
+      </span>
+    );
+  }
+  if (val > 0) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium bg-red-50 text-red-700">
+        <TrendingDown className="w-3.5 h-3.5" />
+        {val}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium bg-slate-50 text-slate-600">
+      <Minus className="w-3.5 h-3.5" /> 0
+    </span>
+  );
+}
+
+export default function App() {
+  const [rows, setRows] = useState([]);               // normalized keywords list
+  const [loading, setLoading] = useState(false);
   const [removingId, setRemovingId] = useState(null);
-  const [updating, setUpdating] = useState(false);
 
-  // simple toast
-  const [toast, setToast] = useState(null); // { msg, type: 'success' | 'error' }
-  const showToast = (msg, type = 'success') => {
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [newKeyword, setNewKeyword] = useState('');
+
+  const [selectedId, setSelectedId] = useState(null);
+  const [selectedKeyword, setSelectedKeyword] = useState(null);
+  const [historical, setHistorical] = useState([]);   // [{ts, pos}...]
+
+  const [updating, setUpdating] = useState(false);    // “Update Now” spinner
+  const [toast, setToast] = useState(null);
+
+  const lastUpdated = useMemo(() => {
+    const maxTs = rows.reduce((acc, r) => {
+      if (!r.timestamp) return acc;
+      const t = new Date(r.timestamp).getTime();
+      return Math.max(acc, t);
+    }, 0);
+    return maxTs ? new Date(maxTs).toISOString() : null;
+  }, [rows]);
+
+  const showToast = useCallback((msg, type = 'info') => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3500);
-  };
+    setTimeout(() => setToast(null), 4000);
+  }, []);
 
-  useEffect(() => { fetchKeywords(); }, []);
-  useEffect(() => {
-    if (selectedKeyword?.keyword_id) {
-      fetchHistoricalData(selectedKeyword.keyword_id);
-    } else {
-      setHistoricalData([]);
-    }
-  }, [selectedKeyword]);
-
-  // ------- API -------
-
-  const fetchKeywords = async () => {
+  // -------- API helpers --------
+  const fetchKeywords = useCallback(async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const res = await fetch(`${API_URL}/keywords`);
+      const res = await fetch(`${API_URL}/api/keywords`);
       const json = await res.json();
-      if (!json.success) throw new Error(json.error || 'Failed to fetch keywords');
-      const rows = (json.data || []).map((k) => ({
-        id: k.keyword_id,
-        keyword_id: k.keyword_id,
-        keyword: k.keyword,
-        position: k.ranking_position ?? 0,
-        url: k.ranking_url || '',
-        delta30: k.delta_30 ?? 0,
-        searchVolume: k.search_volume ?? 0,
-        timestamp: k.timestamp ? String(k.timestamp) : null,
-      }));
-      setKeywords(rows);
-      if (selectedKeyword) {
-        const refreshed = rows.find(r => r.keyword_id === selectedKeyword.keyword_id);
-        if (refreshed) setSelectedKeyword(refreshed);
+
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || `Failed to load: ${res.status}`);
       }
+
+      // Normalize server fields -> UI fields
+      // Server: keyword_id, keyword, target_domain, ranking_position, ranking_url, timestamp, delta_7, delta_30
+      const normalized = (json.data || []).map(k => ({
+        id: k.keyword_id,
+        keyword: k.keyword,
+        domain: k.target_domain,
+        position: k.ranking_position ?? null,
+        url: k.ranking_url ?? '',
+        timestamp: k.timestamp ?? null,
+        delta7: k.delta_7 ?? null,
+        delta30: k.delta_30 ?? null,
+      }));
+
+      setRows(normalized);
     } catch (e) {
       console.error(e);
       showToast(`Failed to load keywords: ${e.message}`, 'error');
     } finally {
       setLoading(false);
     }
-  };
+  }, [showToast]);
 
-  const fetchHistoricalData = async (keywordId) => {
+  const fetchHistory = useCallback(async (id, days = 30) => {
+    if (!id) return;
     try {
-      const res = await fetch(`${API_URL}/keywords/${keywordId}?days=30`);
-      const data = await res.json();
-      if (data.success && data.data?.rankings) {
-        setHistoricalData(
-          data.data.rankings.map(r => ({
-            date: r.timestamp,
-            position: r.ranking_position,
-          })),
-        );
-      } else {
-        setHistoricalData([]);
+      const res = await fetch(`${API_URL}/api/keywords/${id}?days=${days}`);
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || `Failed to load history: ${res.status}`);
       }
-    } catch {
-      setHistoricalData([]);
-    }
-  };
+      // Expect: { data: { keyword, rankings: [{ timestamp, ranking_position }, ...] } }
+      const pts = (json.data?.rankings || [])
+        .filter(r => r.timestamp && (r.ranking_position ?? null) !== null)
+        .map(r => ({
+          ts: new Date(r.timestamp).getTime(),
+          pos: Number(r.ranking_position)
+        }))
+        .sort((a, b) => a.ts - b.ts);
 
-  const handleUpdateNow = async () => {
-    try {
-      setUpdating(true);
-      const res = await fetch(`${API_URL}/keywords/update`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data?.success) {
-        showToast('Update started');
-        setTimeout(fetchKeywords, 1500);
-      } else {
-        showToast(data?.error || 'Failed to start update', 'error');
-      }
-    } catch (e) {
-      showToast(`Failed to start update: ${e.message}`, 'error');
-    } finally {
-      setUpdating(false);
-    }
-  };
-
-  // MULTI-ADD with normalization/dedupe & server add
-  const handleAddKeyword = async () => {
-    const input = (newKeyword || '').trim();
-    if (!input) return;
-
-    setAdding(true);
-
-    const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-    const existing = new Set(keywords.map(k => norm(k.keyword)));
-    const rawItems = input
-      .split(/[\r\n,\t]+/)
-      .map(s => s.replace(/\s+/g, ' ').trim())
-      .filter(Boolean);
-
-    const firstSeen = new Map(); // norm -> original
-    for (const s of rawItems) {
-      const key = norm(s);
-      if (!firstSeen.has(key)) firstSeen.set(key, s);
-    }
-
-    const toAdd = Array.from(firstSeen.entries())
-      .filter(([key]) => !existing.has(key))
-      .map(([, original]) => original);
-
-    const dup = rawItems.length - toAdd.length;
-
-    let ok = 0, fail = 0;
-    for (const kw of toAdd) {
-      try {
-        const res = await fetch(`${API_URL}/keywords`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keyword: kw }),
-        });
-        if (!res.ok) { fail++; continue; }
-        ok++;
-      } catch {
-        fail++;
-      }
-    }
-
-    await fetchKeywords();
-    setNewKeyword('');
-    setShowAddForm(false);
-    setAdding(false);
-
-    showToast(
-      `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
-      + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
-      + (fail ? ` • ${fail} failed` : ''),
-      fail ? 'error' : 'success',
-    );
-  };
-
-  const handleDeleteKeyword = async (kw) => {
-    if (!window.confirm(`Remove "${kw.keyword}" from tracking?`)) return;
-    setRemovingId(kw.keyword_id);
-    try {
-      const res = await fetch(`${API_URL}/keywords/${kw.keyword_id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setKeywords(prev => prev.filter(k => k.keyword_id !== kw.keyword_id));
-      if (selectedKeyword?.keyword_id === kw.keyword_id) setSelectedKeyword(null);
-      showToast(`Removed "${kw.keyword}"`);
+      setSelectedKeyword(json.data?.keyword || null);
+      setHistorical(pts);
     } catch (e) {
       console.error(e);
-      showToast(`Failed to remove keyword: ${e.message}`, 'error');
+      setSelectedKeyword(null);
+      setHistorical([]);
+      showToast(`Failed to load history: ${e.message}`, 'error');
+    }
+  }, [showToast]);
+
+  // initial load
+  useEffect(() => {
+    fetchKeywords();
+  }, [fetchKeywords]);
+
+  // -------- actions --------
+  const handleSelectRow = (row) => {
+    setSelectedId(row.id);
+    fetchHistory(row.id, 30);
+  };
+
+  const handleDelete = async (e, row) => {
+    e.stopPropagation();
+    if (!row?.id) return;
+
+    setRemovingId(row.id);
+    try {
+      const res = await fetch(`${API_URL}/api/keywords/${row.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `Delete failed (${res.status})`);
+      }
+      setRows(prev => prev.filter(r => r.id !== row.id));
+      if (selectedId === row.id) {
+        setSelectedId(null);
+        setSelectedKeyword(null);
+        setHistorical([]);
+      }
+      showToast(`Deleted “${row.keyword}”`, 'success');
+    } catch (e2) {
+      console.error(e2);
+      showToast(`Delete failed: ${e2.message}`, 'error');
     } finally {
       setRemovingId(null);
     }
   };
 
-  // ------- helpers / computed -------
-
-  const handleRowClick = (kw) => {
-    setSelectedKeyword(kw);
-    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
-      const el = document.getElementById('trend-panel');
-      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const handleUpdateNow = async () => {
+    setUpdating(true);
+    try {
+      const res = await fetch(`${API_URL}/api/keywords/update`, { method: 'POST' });
+      const ok = res.ok;
+      // refresh the table shortly after
+      setTimeout(fetchKeywords, 1500);
+      showToast(ok ? 'Ranking update started' : 'Update request failed', ok ? 'success' : 'error');
+    } catch (e) {
+      console.error(e);
+      showToast(`Update failed: ${e.message}`, 'error');
+    } finally {
+      setUpdating(false);
     }
   };
 
-  const getDeltaIcon = (d) => (
-    d > 0 ? <TrendingUp className="w-4 h-4 text-green-600" /> :
-    d < 0 ? <TrendingDown className="w-4 h-4 text-red-600" /> :
-            <Minus className="w-4 h-4 text-gray-400" />
-  );
+  const handleAddKeywords = async () => {
+    const raw = (newKeyword || '').trim();
+    if (!raw) {
+      setShowAddForm(false);
+      return;
+    }
 
-  const getDeltaColor = (d) => (
-    d > 0 ? 'text-green-600 bg-green-50' :
-    d < 0 ? 'text-red-600 bg-red-50'  : 'text-gray-600 bg-gray-50'
-  );
+    setAdding(true);
+    try {
+      // split by newline or comma
+      const rawItems = raw
+        .split(/\r?\n|,/g)
+        .map(s => s.trim())
+        .filter(Boolean);
 
-  const sortedKeywords = useMemo(() => {
-    return [...keywords].sort((a, b) => {
-      const ap = a.position || 9999;
-      const bp = b.position || 9999;
-      if (ap !== bp) return ap - bp;
-      return a.keyword.localeCompare(b.keyword);
-    });
-  }, [keywords]);
+      // existing normalized set (lowercased & collapsed spaces)
+      const norm = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
-  const avgPosition = useMemo(() => {
-    const withPos = keywords.filter(k => (k.position ?? 0) > 0);
-    if (withPos.length === 0) return 0;
-    return (withPos.reduce((s, k) => s + (k.position || 0), 0) / withPos.length).toFixed(1);
-  }, [keywords]);
+      const existing = new Set(rows.map(r => norm(r.keyword)));
 
-  const lastUpdated = useMemo(() => {
-    const stamps = keywords
-      .map(k => (k.timestamp ? Date.parse(k.timestamp) : NaN))
-      .filter(n => Number.isFinite(n));
-    if (stamps.length === 0) return null;
-    const dt = new Date(Math.max(...stamps));
-    return dt.toLocaleString(undefined, { hour: 'numeric', minute: '2-digit', month: 'numeric', day: 'numeric', year: 'numeric' });
-  }, [keywords]);
+      const firstSeen = new Map(); // norm -> original
+      for (const s of rawItems) {
+        const key = norm(s);
+        if (!firstSeen.has(key)) firstSeen.set(key, s);
+      }
 
-  // ------- render -------
+      const toAdd = Array.from(firstSeen.entries())
+        .filter(([key]) => !existing.has(key))
+        .map(([, original]) => original);
 
-  if (loading) {
+      const dup = rawItems.length - toAdd.length;
+
+      let ok = 0, fail = 0;
+      for (const kw of toAdd) {
+        try {
+          const res = await fetch(`${API_URL}/api/keywords`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keyword: kw }),
+          });
+          if (!res.ok) { fail++; continue; }
+          ok++;
+        } catch {
+          fail++;
+        }
+      }
+
+      await fetchKeywords();
+      setNewKeyword('');
+      setShowAddForm(false);
+
+      showToast(
+        `Added ${ok} ${ok === 1 ? 'keyword' : 'keywords'}`
+          + (dup ? ` • ${dup} duplicate${dup > 1 ? 's' : ''}` : '')
+          + (fail ? ` • ${fail} failed` : ''),
+        fail ? 'error' : 'success'
+      );
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  // -------- sparkline (simple inline SVG) --------
+  const Sparkline = ({ points, height = 40 }) => {
+    if (!points?.length) return <div className="text-xs text-slate-400">No history</div>;
+
+    const w = Math.max(100, points.length * 14); // simple width scale
+    const xs = points.map((p, i) => (w / (points.length - 1 || 1)) * i);
+    const ys = (() => {
+      const vals = points.map(p => p.pos);
+      const min = Math.min(...vals);
+      const max = Math.max(...vals);
+      if (min === max) {
+        return points.map(() => height / 2);
+      }
+      // invert: lower rank (1) is higher on the chart
+      return points.map(p => {
+        const t = (p.pos - min) / (max - min);
+        return (1 - t) * (height - 6) + 3;
+      });
+    })();
+
+    const d = xs.map((x, i) => `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${ys[i].toFixed(1)}`).join(' ');
+
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-slate-600">Loading rankings...</p>
-        </div>
-      </div>
+      <svg viewBox={`0 0 ${w} ${height}`} className="w-full h-10">
+        <path d={d} fill="none" stroke="currentColor" strokeWidth="2" className="text-blue-600" />
+      </svg>
     );
-  }
+  };
 
+  // -------- UI --------
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <div className="max-w-7xl mx-auto p-6">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-slate-900 mb-2">Keyword Rank Tracker</h1>
-          <p className="text-slate-600">Track keyword rankings for blumenshinelawgroup.com</p>
-          <p className="text-sm text-slate-500 mt-1">Rankings update automatically daily at 2:00 AM</p>
-        </div>
+    <div className="min-h-screen bg-slate-50">
+      {/* Top bar */}
+      <header className="sticky top-0 z-10 bg-white border-b border-slate-200">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-slate-900">RankTrakr</h1>
 
-        {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-          <div className="bg-white rounded-lg shadow-sm p-6 border border-slate-200">
-            <div className="text-sm font-medium text-slate-600 mb-1">Total Keywords</div>
-            <div className="text-3xl font-bold text-slate-900">{keywords.length}</div>
-          </div>
-          <div className="bg-white rounded-lg shadow-sm p-6 border border-slate-200">
-            <div className="text-sm font-medium text-slate-600 mb-1">Average Position</div>
-            <div className="text-3xl font-bold text-slate-900">{avgPosition}</div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowAddForm(v => !v)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-slate-900 text-white px-3 py-1.5 text-sm hover:bg-slate-800"
+            >
+              <Plus className="w-4 h-4" /> Add Keyword(s)
+            </button>
+
+            <button
+              onClick={handleUpdateNow}
+              disabled={updating}
+              className={classNames(
+                'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm border',
+                updating ? 'bg-slate-100 text-slate-500' : 'bg-white text-slate-700 hover:bg-slate-50 border-slate-200'
+              )}
+            >
+              {updating ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+              Update Now
+            </button>
           </div>
         </div>
+      </header>
 
-        {/* Table + Trend */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 items-start gap-6">
-          {/* Table card */}
-          <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
-                {lastUpdated && (
-                  <div className="text-sm text-slate-500 mt-1">
-                    Last updated: {lastUpdated}
-                  </div>
+      {/* Add form */}
+      {showAddForm && (
+        <div className="border-b border-slate-200 bg-white">
+          <div className="max-w-6xl mx-auto px-4 py-3">
+            <label className="block text-sm font-medium text-slate-700 mb-2">
+              Add one or more keywords (comma or newline separated)
+            </label>
+            <textarea
+              value={newKeyword}
+              onChange={e => setNewKeyword(e.target.value)}
+              placeholder="e.g. chicago car accident lawyer&#10;airport injury"
+              className="w-full rounded-md border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm p-2"
+              rows={3}
+            />
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={handleAddKeywords}
+                disabled={adding}
+                className={classNames(
+                  'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm',
+                  adding ? 'bg-slate-200 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'
                 )}
+              >
+                {adding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                Add
+              </button>
+              <button
+                onClick={() => { setShowAddForm(false); setNewKeyword(''); }}
+                className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm border bg-white hover:bg-slate-50 border-slate-200 text-slate-700"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Selected details (simple, above table for reliability) */}
+      {selectedId && (
+        <div className="border-b border-slate-200 bg-white">
+          <div className="max-w-6xl mx-auto px-4 py-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm text-slate-500">Selected keyword</div>
+                <div className="text-base font-semibold text-slate-900">
+                  {rows.find(r => r.id === selectedId)?.keyword || '—'}
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setShowAddForm(v => !v)}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-white bg-blue-600 hover:bg-blue-700"
-                  title="Add Keyword(s)"
-                >
-                  <Plus className="w-4 h-4" />
-                  Add Keyword(s)
-                </button>
-                <button
-                  type="button"
-                  onClick={handleUpdateNow}
-                  disabled={updating}
-                  className={`px-4 py-2 rounded-md text-white ${updating ? 'bg-slate-400' : 'bg-slate-900 hover:bg-slate-800'}`}
-                  title="Trigger an immediate refresh"
-                >
-                  {updating ? 'Updating…' : 'Update Now'}
-                </button>
+              <div className="text-sm text-slate-500">
+                History (last 30 days)
               </div>
             </div>
-
-            {/* Add form */}
-            {showAddForm && (
-              <div className="px-6 py-4 border-b border-slate-200">
-                <div className="flex gap-3">
-                  <textarea
-                    value={newKeyword}
-                    onChange={(e) => setNewKeyword(e.target.value)}
-                    onKeyDown={(e) => {
-                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                        e.preventDefault();
-                        handleAddKeyword();
-                      }
-                    }}
-                    placeholder="Enter keywords — one per line or comma-separated"
-                    rows={4}
-                    className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddKeyword}
-                    disabled={adding || !newKeyword.trim()}
-                    className={`px-6 py-2 rounded-lg text-white ${adding ? 'bg-slate-400' : 'bg-blue-600 hover:bg-blue-700'}`}
-                  >
-                    {adding ? 'Adding…' : 'Add'}
-                  </button>
-                </div>
-                <p className="text-xs text-slate-500 mt-2">Tip: paste from a spreadsheet, or use commas/new lines.</p>
-              </div>
-            )}
-
-            {/* Table */}
-            {keywords.length === 0 ? (
-              <div className="p-12 text-center text-slate-400">
-                <Search className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                <p className="text-lg mb-2">No keywords yet</p>
-                <p className="text-sm">Add your first keyword to start tracking</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-slate-50 border-b border-slate-200">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-slate-600 uppercase">Keyword</th>
-                      <th className="px-6 py-3 text-center text-xs font-medium text-slate-600 uppercase">Position</th>
-                      <th className="px-6 py-3 text-center text-xs font-medium text-slate-600 uppercase">Δ30d</th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-slate-600 uppercase">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {sortedKeywords.map((kw) => (
-                      <tr
-                        key={kw.id}
-                        onClick={() => handleRowClick(kw)}
-                        className={`cursor-pointer ${selectedKeyword?.id === kw.id ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
-                      >
-                        <td className="px-6 py-3">
-                          <div className="text-sm font-medium text-slate-900">{kw.keyword}</div>
-                          <div className="text-xs text-slate-500 mt-1 truncate">
-                            {kw.url || '—'}
-                          </div>
-                        </td>
-                        <td className="px-6 py-3 text-center">
-                          {kw.position > 0 ? (
-                            <span className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-900 text-white text-sm font-semibold">
-                              {kw.position}
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">
-                              Pending
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-6 py-3">
-                          <div className="flex items-center justify-center gap-2">
-                            {kw.position > 0 ? (
-                              <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium ${getDeltaColor(kw.delta30)}`}>
-                                {getDeltaIcon(kw.delta30)} {Math.abs(kw.delta30)}
-                              </span>
-                            ) : (
-                              <span className="text-slate-400 text-sm">—</span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-6 py-3">
-                          <div className="flex justify-end">
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); handleDeleteKeyword(kw); }}
-                              disabled={removingId === kw.keyword_id}
-                              className={`inline-flex items-center justify-center w-9 h-9 rounded-md text-white ${removingId === kw.keyword_id ? 'bg-slate-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
-                              title="Remove keyword"
-                              aria-label="Remove keyword"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Trend card */}
-          <div
-            id="trend-panel"
-            className="bg-white rounded-lg shadow-sm border border-slate-200 p-6 lg:sticky lg:top-24 h-fit"
-          >
-            <h2 className="text-xl font-semibold text-slate-900 mb-6">
-              {selectedKeyword ? 'Ranking Trend (30 Days)' : 'Select a keyword to view trends'}
-            </h2>
-
-            {selectedKeyword ? (
-              <>
-                <div className="mb-6 p-4 bg-slate-50 rounded-lg">
-                  <div className="text-sm font-medium text-slate-600 mb-2">Selected Keyword</div>
-                  <div className="text-lg font-semibold text-slate-900 mb-1">{selectedKeyword.keyword}</div>
-                  <div className="flex items-center gap-4 text-sm text-slate-600">
-                    <span>Current: {selectedKeyword.position > 0 ? `#${selectedKeyword.position}` : 'Pending'}</span>
-                    <span className="truncate max-w-[18rem]">URL: {selectedKeyword.url || '—'}</span>
-                  </div>
-                </div>
-
-                {historicalData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={300}>
-                    <LineChart data={historicalData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis
-                        dataKey="date"
-                        stroke="#64748b"
-                        tick={{ fontSize: 12 }}
-                        tickFormatter={(d) =>
-                          new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                        }
-                      />
-                      <YAxis reversed stroke="#64748b" tick={{ fontSize: 12 }} domain={[1, 'dataMax + 5']} />
-                      <Tooltip />
-                      <Line
-                        type="monotone"
-                        dataKey="position"
-                        stroke="#2563eb"
-                        strokeWidth={2}
-                        dot={{ fill: '#2563eb', r: 3 }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div className="flex items-center justify-center h-80 text-slate-400">
-                    <div className="text-center">
-                      <p>No historical data yet</p>
-                      <p className="text-sm mt-2">Check back after the next update</p>
-                    </div>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="flex items-center justify-center h-80 text-slate-400">
-                <div className="text-center">
-                  <Search className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                  <p>Click on a keyword to view its ranking history</p>
-                </div>
-              </div>
-            )}
+            <div className="mt-2">
+              <Sparkline points={historical} />
+            </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {/* Table */}
+      <main className="max-w-6xl mx-auto px-4 py-4">
+        <div className="mb-3 text-xs text-slate-500">
+          Last updated: {lastUpdated ? formatDate(lastUpdated) : '—'}
+        </div>
+
+        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="text-left font-medium px-3 py-2">Keyword</th>
+                <th className="text-left font-medium px-3 py-2">URL</th>
+                <th className="text-right font-medium px-3 py-2">Position</th>
+                <th className="text-right font-medium px-3 py-2">30d Δ</th>
+                <th className="text-right font-medium px-3 py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {loading && (
+                <tr>
+                  <td colSpan="5" className="px-3 py-6 text-center text-slate-500">
+                    <Loader2 className="w-5 h-5 inline-block animate-spin mr-2" />
+                    Loading…
+                  </td>
+                </tr>
+              )}
+
+              {!loading && rows.length === 0 && (
+                <tr>
+                  <td colSpan="5" className="px-3 py-6 text-center text-slate-500">
+                    No keywords yet. Click <span className="font-medium">Add Keyword(s)</span> to get started.
+                  </td>
+                </tr>
+              )}
+
+              {!loading && rows.map((row) => (
+                <tr
+                  key={row.id}
+                  onClick={() => handleSelectRow(row)}
+                  className={classNames(
+                    'hover:bg-slate-50 cursor-pointer',
+                    selectedId === row.id ? 'bg-blue-50/40' : ''
+                  )}
+                >
+                  <td className="px-3 py-2">
+                    <div className="text-slate-900">{row.keyword}</div>
+                    <div className="text-[11px] text-slate-500">{row.domain}</div>
+                  </td>
+
+                  <td className="px-3 py-2 max-w-[420px]">
+                    {row.url ? (
+                      <a
+                        href={row.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 hover:underline break-all"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {row.url}
+                      </a>
+                    ) : <span className="text-slate-400">—</span>}
+                  </td>
+
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {row.position != null ? row.position : <span className="text-slate-400">—</span>}
+                    </td>
+
+                  <td className="px-3 py-2 text-right">
+                    <DeltaBadge delta={row.delta30} />
+                  </td>
+
+                  <td className="px-3 py-2">
+                    <div className="flex justify-end">
+                      <button
+                        onClick={(e) => handleDelete(e, row)}
+                        disabled={removingId === row.id}
+                        title="Delete keyword"
+                        className={classNames(
+                          'inline-flex items-center justify-center rounded-md border px-2 py-1.5',
+                          'hover:bg-red-50',
+                          removingId === row.id
+                            ? 'border-slate-200 text-slate-400 bg-slate-50'
+                            : 'border-slate-200 text-slate-700'
+                        )}
+                      >
+                        {removingId === row.id
+                          ? <Loader2 className="w-4 h-4 animate-spin" />
+                          : <Trash2 className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+
+            </tbody>
+          </table>
+        </div>
+      </main>
 
       {/* Toast */}
       {toast && (
-        <div
-          className={`fixed bottom-4 right-4 px-4 py-3 rounded-lg shadow-lg text-white ${
-            toast.type === 'error' ? 'bg-red-600' : 'bg-slate-900'
-          }`}
-        >
-          {toast.msg}
+        <div className="fixed bottom-4 right-4 z-50">
+          <div
+            className={classNames(
+              'rounded-md px-3 py-2 text-sm shadow',
+              toast.type === 'error' ? 'bg-red-600 text-white' :
+              toast.type === 'success' ? 'bg-green-600 text-white' :
+              'bg-slate-900 text-white'
+            )}
+          >
+            {toast.msg}
+          </div>
         </div>
       )}
     </div>
   );
-};
-
-export default RankTracker;
+}
