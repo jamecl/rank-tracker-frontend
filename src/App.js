@@ -55,7 +55,6 @@ const RankTracker = () => {
         timestamp: k.timestamp ? String(k.timestamp) : null,
       }));
       setKeywords(rows);
-      // ensure selected row is in sync
       if (selectedKeyword) {
         const refreshed = rows.find(r => r.keyword_id === selectedKeyword.keyword_id);
         if (refreshed) setSelectedKeyword(refreshed);
@@ -94,7 +93,6 @@ const RankTracker = () => {
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.success) {
         showToast('Update started');
-        // small refresh after a moment to reflect “Pending/changes”
         setTimeout(fetchKeywords, 1500);
       } else {
         showToast(data?.error || 'Failed to start update', 'error');
@@ -181,7 +179,6 @@ const RankTracker = () => {
 
   const handleRowClick = (kw) => {
     setSelectedKeyword(kw);
-    // smooth scroll to trend panel on small screens
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       const el = document.getElementById('trend-panel');
       el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -263,13 +260,15 @@ const RankTracker = () => {
           {/* Table card */}
           <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
             <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
-              <div className="flex items-center gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Keyword Rankings</h2>
                 {lastUpdated && (
-                  <span className="hidden md:inline text-sm text-slate-500">
+                  <div className="text-sm text-slate-500 mt-1">
                     Last updated: {lastUpdated}
-                  </span>
+                  </div>
                 )}
+              </div>
+              <div className="flex items-center gap-3">
                 <button
                   type="button"
                   onClick={() => setShowAddForm(v => !v)}
