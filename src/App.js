@@ -180,7 +180,7 @@ export default function App() {
   const totalKeywords = keywords.length;
 
   const avgPosition = useMemo(() => {
-    the const nums = keywords.map((k) => k.position).filter((n) => n != null);
+    const nums = keywords.map((k) => k.position).filter((n) => n != null);
     if (!nums.length) return null;
     const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
     return Math.round(avg * 10) / 10;
