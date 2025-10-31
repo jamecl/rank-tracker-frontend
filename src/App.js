@@ -1,3 +1,4 @@
+// src/App.js
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Plus,
@@ -9,15 +10,11 @@ import {
   Minus,
 } from "lucide-react";
 
-// ---------------- config ----------------
-const RAW_API =
-  (process.env.REACT_APP_API_URL || "/api")
-    .trim()
-    .replace(/\/+$/, ""); // no trailing slash
-
+/* ---------------- config ---------------- */
+const RAW_API = (process.env.REACT_APP_API_URL || "/api").trim().replace(/\/+$/, "");
 const API_URL = RAW_API || "/api";
 
-// -------------- small ui bits --------------
+/* -------------- small ui bits -------------- */
 const Pill = ({ children, className = "" }) => (
   <span
     className={
@@ -83,7 +80,7 @@ const Toast = ({ toast, clear }) => {
   );
 };
 
-// -------------- helpers --------------
+/* -------------- helpers -------------- */
 const asNumber = (v) =>
   typeof v === "number" && !Number.isNaN(v) ? v : null;
 
@@ -91,8 +88,10 @@ const clip = (s, n = 96) =>
   !s ? "" : s.length > n ? s.slice(0, n - 1) + "…" : s;
 
 const mapServerKeyword = (k) => ({
-  id: k.keyword_id, // keep a single source of truth
+  // single source of truth for identity
+  id: k.keyword_id,
   keyword_id: k.keyword_id,
+
   keyword: k.keyword || "",
   url: k.ranking_url || "",
   position: asNumber(k.ranking_position),
@@ -116,34 +115,7 @@ const getDeltaClasses = (d) =>
     ? "text-rose-700 bg-rose-50 ring-1 ring-rose-200"
     : "text-slate-600 bg-slate-50 ring-1 ring-slate-200";
 
-// ---------------- Graph Modal ----------------
-const Graph = ({ keywordId, closeModal }) => {
-  // Fetch graph data based on keywordId (or simulate it for now)
-  useEffect(() => {
-    // Simulate fetching graph data based on keywordId
-    console.log(`Fetching graph data for keyword ID: ${keywordId}`);
-  }, [keywordId]);
-
-  return (
-    <div className="modal-overlay" onClick={closeModal}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-        <button className="close-btn" onClick={closeModal}>
-          X
-        </button>
-        <div className="modal-body">
-          <h3>Graph for Keyword: {keywordId}</h3>
-          {/* Placeholder for the actual graph */}
-          <div className="graph-placeholder" style={{ height: "300px" }}>
-            {/* Example of graph rendering */}
-            <p>Graph will go here</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// -------------- main --------------
+/* -------------- main -------------- */
 export default function App() {
   const [keywords, setKeywords] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -152,7 +124,6 @@ export default function App() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [newKeyword, setNewKeyword] = useState("");
   const [toast, setToast] = useState(null);
-  const [selectedKeywordId, setSelectedKeywordId] = useState(null);
 
   const showToast = (msg, type = "ok") => {
     setToast({ msg, type });
@@ -166,13 +137,30 @@ export default function App() {
       const res = await fetch(`${API_URL}/keywords`, {
         headers: { Accept: "application/json" },
       });
+
+      // guard: avoid trying to parse HTML error pages
+      const ct = res.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        const text = await res.text();
+        throw new Error(
+          `Unexpected response (status ${res.status}). Content-Type=${ct}. First bytes: ${clip(
+            text.replace(/\s+/g, " "),
+            60
+          )}`
+        );
+      }
+
       const json = await res.json();
       const raw = Array.isArray(json) ? json : json.data || [];
       const list = raw.map(mapServerKeyword);
+
       setKeywords(list);
     } catch (e) {
       console.error(e);
-      showToast(`Failed to load keywords: ${e.message || "unknown error"}`, "error");
+      showToast(
+        `Failed to load keywords: ${e.message || "unknown error"}`,
+        "error"
+      );
       setKeywords([]);
     } finally {
       setLoading(false);
@@ -181,11 +169,33 @@ export default function App() {
 
   useEffect(() => {
     fetchKeywords();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ---------- computed ----------
+  const totalKeywords = keywords.length;
+
+  const avgPosition = useMemo(() => {
+    const nums = keywords.map((k) => k.position).filter((n) => n != null);
+    if (!nums.length) return null;
+    const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+    return Math.round(avg * 10) / 10;
+  }, [keywords]);
+
+  const lastUpdated = useMemo(() => {
+    const ts = keywords
+      .map((k) => k.timestamp)
+      .filter((t) => typeof t === "number");
+    if (!ts.length) return null;
+    return new Date(Math.max(...ts));
+  }, [keywords]);
+
+  // ---------- actions ----------
   const handleDelete = async (kw) => {
     if (!kw?.id) return;
-    const yes = window.confirm(`Delete keyword: "${kw.keyword}"?`);
+    const yes = window.confirm(
+      `Delete keyword: "${kw.keyword}"? This cannot be undone.`
+    );
     if (!yes) return;
 
     setRemovingId(kw.id);
@@ -213,10 +223,17 @@ export default function App() {
     if (!raw) return;
 
     setAdding(true);
-    const rawItems = raw.split(/\r?\n|,/).map((s) => s.trim()).filter(Boolean);
+
+    // allow multi-line / comma-separated entry
+    const rawItems = raw
+      .split(/\r?\n|,/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    // normalize & de-dupe vs existing
     const norm = (s) => s.toLowerCase().replace(/\s+/g, " ").trim();
     const existing = new Set(keywords.map((k) => norm(k.keyword)));
-    const firstSeen = new Map();
+    const firstSeen = new Map(); // norm -> original
     for (const s of rawItems) {
       const key = norm(s);
       if (!firstSeen.has(key)) firstSeen.set(key, s);
@@ -226,7 +243,8 @@ export default function App() {
       .map(([, original]) => original);
     const dup = rawItems.length - toAdd.length;
 
-    let ok = 0, fail = 0;
+    let ok = 0,
+      fail = 0;
     for (const kw of toAdd) {
       try {
         const res = await fetch(`${API_URL}/keywords`, {
@@ -250,100 +268,231 @@ export default function App() {
     setAdding(false);
 
     showToast(
-      `Added ${ok} keyword${ok === 1 ? "" : "s"}${
+      `Added ${ok} ${ok === 1 ? "keyword" : "keywords"}${
         dup ? ` • ${dup} duplicate${dup > 1 ? "s" : ""}` : ""
       }${fail ? ` • ${fail} failed` : ""}`,
       fail ? "error" : "ok"
     );
   };
 
-  // -------------- render --------------
+  const handleRefresh = async () => {
+    await fetchKeywords();
+    showToast("Refreshed.", "ok");
+  };
+
+  /* -------------- render -------------- */
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="max-w-6xl mx-auto px-6 py-8">
         {/* Header */}
-        <h1 className="text-3xl font-bold">Keyword Rank Tracker</h1>
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold">Keyword Rank Tracker</h1>
+          <p className="text-slate-600 mt-1">
+            Track keyword rankings for blumenshinelawgroup.com
+          </p>
+          <p className="text-slate-400 text-sm mt-1">
+            Rankings update automatically daily at 2:00 AM
+          </p>
+        </div>
 
-        {/* Table and actions */}
-        <div className="mt-6">
-          <div className="mb-6">
-            <Button variant="primary" onClick={() => setShowAddForm((v) => !v)}>
-              <Plus className="w-4 h-4" />
-              Add Keyword(s)
-            </Button>
-            <Button variant="dark" onClick={handleRefresh}>
-              <RefreshCw className="w-4 h-4" />
-              Refresh
-            </Button>
+        {/* Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div className="bg-white rounded-2xl p-5 shadow-sm ring-1 ring-slate-200">
+            <div className="text-slate-600 text-sm">Total Keywords</div>
+            <div className="text-4xl font-semibold mt-1">{totalKeywords}</div>
           </div>
 
+          <div className="bg-white rounded-2xl p-5 shadow-sm ring-1 ring-slate-200">
+            <div className="text-slate-600 text-sm">Average Position</div>
+            <div className="text-4xl font-semibold mt-1">
+              {avgPosition == null ? "—" : avgPosition}
+            </div>
+          </div>
+        </div>
+
+        {/* Table Card */}
+        <div className="bg-white rounded-2xl shadow-sm ring-1 ring-slate-200 overflow-hidden">
+          {/* Card header */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-5 py-4 border-b border-slate-200">
+            <div className="flex items-center gap-2 text-slate-600">
+              <Clock className="w-4 h-4" />
+              <span className="text-sm">
+                Last updated:&nbsp;
+                {lastUpdated ? lastUpdated.toLocaleString() : "—"}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                onClick={() => setShowAddForm((v) => !v)}
+              >
+                <Plus className="w-4 h-4" />
+                Add Keyword(s)
+              </Button>
+              <Button variant="dark" onClick={handleRefresh}>
+                <RefreshCw className="w-4 h-4" />
+                Update Now
+              </Button>
+            </div>
+          </div>
+
+          {/* Add form */}
+          {showAddForm && (
+            <div className="px-5 pt-4 pb-2 border-b border-slate-200">
+              <form onSubmit={handleAdd} className="space-y-3">
+                <label className="block text-sm text-slate-600">
+                  Enter one per line or separate with commas:
+                </label>
+                <textarea
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  rows={3}
+                  value={newKeyword}
+                  onChange={(e) => setNewKeyword(e.target.value)}
+                  placeholder="e.g. chicago bed bug attorney&#10;airport injury lawyer"
+                />
+                <div className="flex items-center gap-2">
+                  <Button type="submit" disabled={adding}>
+                    {adding && <RefreshCw className="w-4 h-4 animate-spin" />}
+                    Add
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    type="button"
+                    onClick={() => {
+                      setShowAddForm(false);
+                      setNewKeyword("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* Table */}
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50">
                 <tr className="text-slate-600">
-                  <th className="text-left font-semibold px-5 py-3">Keyword</th>
-                  <th className="text-left font-semibold px-5 py-3">Position</th>
-                  <th className="text-left font-semibold px-5 py-3">Δ30D</th>
-                  <th className="text-left font-semibold px-5 py-3">Actions</th>
+                  <th className="text-left font-semibold px-5 py-3 w-[44%]">
+                    KEYWORD
+                  </th>
+                  <th className="text-left font-semibold px-5 py-3 w-[16%]">
+                    POSITION
+                  </th>
+                  <th className="text-left font-semibold px-5 py-3 w-[16%]">
+                    Δ30D
+                  </th>
+                  <th className="text-left font-semibold px-5 py-3 w-[12%]">
+                    ACTIONS
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {loading ? (
+                {!loading && keywords.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="px-5 py-10 text-center text-slate-500">
+                    <td
+                      colSpan={4}
+                      className="px-5 py-10 text-center text-slate-500"
+                    >
+                      No keywords yet. Click <b>Add Keyword(s)</b> to get
+                      started.
+                    </td>
+                  </tr>
+                )}
+
+                {loading && (
+                  <tr>
+                    <td
+                      colSpan={4}
+                      className="px-5 py-10 text-center text-slate-500"
+                    >
                       Loading…
                     </td>
                   </tr>
-                ) : keywords.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="px-5 py-10 text-center text-slate-500">
-                      No keywords yet. Click <b>Add Keyword(s)</b> to get started.
+                )}
+
+                {keywords.map((kw) => (
+                  <tr
+                    key={kw.id}
+                    className="border-t border-slate-200 hover:bg-slate-50/60"
+                  >
+                    {/* Keyword + URL */}
+                    <td className="px-5 py-3 align-top">
+                      <div className="font-medium text-slate-900">
+                        {kw.keyword || "—"}
+                      </div>
+                      <div className="text-slate-500 text-xs">
+                        {kw.url ? (
+                          <a
+                            href={kw.url}
+                            className="underline decoration-dotted underline-offset-2"
+                            rel="noreferrer"
+                            target="_blank"
+                            title={kw.url}
+                          >
+                            {clip(kw.url, 72)}
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Position */}
+                    <td className="px-5 py-3 align-top">
+                      <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-slate-900 text-white font-semibold">
+                        {kw.position == null ? "—" : kw.position}
+                      </div>
+                    </td>
+
+                    {/* Delta 30d */}
+                    <td className="px-5 py-3 align-top">
+                      <Pill className={getDeltaClasses(kw.delta30)}>
+                        <span className="mr-1">{getDeltaIcon(kw.delta30)}</span>
+                        <span>
+                          {kw.delta30 == null
+                            ? "0"
+                            : kw.delta30 > 0
+                            ? `+${kw.delta30}`
+                            : `${kw.delta30}`}
+                        </span>
+                      </Pill>
+                    </td>
+
+                    {/* Actions */}
+                    <td className="px-5 py-3 align-top">
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => handleDelete(kw)}
+                        disabled={removingId === kw.id}
+                        title="Delete"
+                      >
+                        {removingId === kw.id ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
+                        <span className="sr-only">Delete</span>
+                      </Button>
                     </td>
                   </tr>
-                ) : (
-                  keywords.map((kw) => (
-                    <tr key={kw.id} className="border-t border-slate-200">
-                      <td className="px-5 py-3">
-                        <div className="font-medium text-slate-900">{kw.keyword}</div>
-                      </td>
-                      <td className="px-5 py-3">{kw.position}</td>
-                      <td className="px-5 py-3">
-                        <Pill className={getDeltaClasses(kw.delta30)}>
-                          {getDeltaIcon(kw.delta30)}
-                          {kw.delta30 == null ? "0" : kw.delta30 > 0 ? `+${kw.delta30}` : `${kw.delta30}`}
-                        </Pill>
-                      </td>
-                      <td className="px-5 py-3">
-                        <Button
-                          variant="danger"
-                          size="sm"
-                          onClick={() => handleDelete(kw)}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setSelectedKeywordId(kw.id)}
-                        >
-                          View Graph
-                        </Button>
-                      </td>
-                    </tr>
-                  ))
-                )}
+                ))}
               </tbody>
             </table>
           </div>
         </div>
 
-        {/* Graph Modal */}
-        {selectedKeywordId && (
-          <Graph keywordId={selectedKeywordId} closeModal={() => setSelectedKeywordId(null)} />
-        )}
-
-        <Toast toast={toast} clear={() => setToast(null)} />
+        {/* Footer hint */}
+        <p className="text-xs text-slate-400 mt-4">
+          API: <code className="font-mono">{API_URL}</code>
+        </p>
       </div>
+
+      <Toast toast={toast} clear={() => setToast(null)} />
     </div>
   );
 }
