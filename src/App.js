@@ -10,11 +10,15 @@ import {
   Minus,
 } from "lucide-react";
 
-/* ---------------- config ---------------- */
-const RAW_API = (process.env.REACT_APP_API_URL || "/api").trim().replace(/\/+$/, "");
+// ---------------- config ----------------
+const RAW_API =
+  (process.env.REACT_APP_API_URL || "/api")
+    .trim()
+    .replace(/\/+$/, ""); // no trailing slash
+
 const API_URL = RAW_API || "/api";
 
-/* -------------- small ui bits -------------- */
+// -------------- small ui bits --------------
 const Pill = ({ children, className = "" }) => (
   <span
     className={
@@ -34,6 +38,7 @@ const Button = ({
   disabled,
   className = "",
   type = "button",
+  title,
 }) => {
   const base =
     "inline-flex items-center gap-2 rounded-xl font-medium transition-colors focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed";
@@ -54,6 +59,7 @@ const Button = ({
       onClick={onClick}
       disabled={disabled}
       className={`${base} ${sizes[size]} ${variants[variant]} ${className}`}
+      title={title}
     >
       {children}
     </button>
@@ -80,7 +86,7 @@ const Toast = ({ toast, clear }) => {
   );
 };
 
-/* -------------- helpers -------------- */
+// -------------- helpers --------------
 const asNumber = (v) =>
   typeof v === "number" && !Number.isNaN(v) ? v : null;
 
@@ -88,10 +94,8 @@ const clip = (s, n = 96) =>
   !s ? "" : s.length > n ? s.slice(0, n - 1) + "…" : s;
 
 const mapServerKeyword = (k) => ({
-  // single source of truth for identity
-  id: k.keyword_id,
+  id: k.keyword_id, // keep a single source of truth
   keyword_id: k.keyword_id,
-
   keyword: k.keyword || "",
   url: k.ranking_url || "",
   position: asNumber(k.ranking_position),
@@ -115,7 +119,7 @@ const getDeltaClasses = (d) =>
     ? "text-rose-700 bg-rose-50 ring-1 ring-rose-200"
     : "text-slate-600 bg-slate-50 ring-1 ring-slate-200";
 
-/* -------------- main -------------- */
+// -------------- main --------------
 export default function App() {
   const [keywords, setKeywords] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -176,7 +180,7 @@ export default function App() {
   const totalKeywords = keywords.length;
 
   const avgPosition = useMemo(() => {
-    const nums = keywords.map((k) => k.position).filter((n) => n != null);
+    the const nums = keywords.map((k) => k.position).filter((n) => n != null);
     if (!nums.length) return null;
     const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
     return Math.round(avg * 10) / 10;
@@ -280,7 +284,13 @@ export default function App() {
     showToast("Refreshed.", "ok");
   };
 
-  /* -------------- render -------------- */
+  // NEW: harmless hook for “Trend” button
+  const handleShowTrend = (kw) => {
+    // Keep it ultra-simple for now; no API calls or layout changes.
+    showToast(`Trend for “${kw.keyword}” coming soon.`, "ok");
+  };
+
+  // -------------- render --------------
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="max-w-6xl mx-auto px-6 py-8">
@@ -353,7 +363,9 @@ export default function App() {
                 />
                 <div className="flex items-center gap-2">
                   <Button type="submit" disabled={adding}>
-                    {adding && <RefreshCw className="w-4 h-4 animate-spin" />}
+                    {adding && (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                    )}
                     Add
                   </Button>
                   <Button
@@ -464,20 +476,32 @@ export default function App() {
 
                     {/* Actions */}
                     <td className="px-5 py-3 align-top">
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={() => handleDelete(kw)}
-                        disabled={removingId === kw.id}
-                        title="Delete"
-                      >
-                        {removingId === kw.id ? (
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Trash2 className="w-4 h-4" />
-                        )}
-                        <span className="sr-only">Delete</span>
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleShowTrend(kw)}
+                          title="Show trend (preview)"
+                        >
+                          <TrendingUp className="w-4 h-4" />
+                          Trend
+                        </Button>
+
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          onClick={() => handleDelete(kw)}
+                          disabled={removingId === kw.id}
+                          title="Delete"
+                        >
+                          {removingId === kw.id ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-4 h-4" />
+                          )}
+                          <span className="sr-only">Delete</span>
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
